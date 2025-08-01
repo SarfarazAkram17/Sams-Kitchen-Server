@@ -11,7 +11,7 @@ const cookieParser = require("cookie-parser");
 
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: ["https://sams-kitchen.netlify.app", "http://localhost:5173"],
     credentials: true,
   })
 );
@@ -19,7 +19,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.get("/", (req, res) => {
-  res.send("Assignment 12 is cooking");
+  res.send("Sam's Kitchen is cooking");
 });
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.or0q8ig.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -32,25 +32,46 @@ const client = new MongoClient(uri, {
 });
 
 async function run() {
-  // const verifyJwt = (req, res, next) => {
-  //   const token = req.cookies.token;
+  const verifyJwt = (req, res, next) => {
+    const token = req.cookies.token;
 
-  //   if (!token) {
-  //     return res.status(401).send({ message: "Unauthorized Access" });
+    if (!token) {
+      return res.status(401).send({ message: "Unauthorized Access" });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        return res.status(403).send({ message: "Forbidden: Invalid token" });
+      }
+
+      if (req.query.email !== decoded.email) {
+        return res.status(403).send({ message: "Forbidden: Email mismatch" });
+      }
+      req.user = decoded;
+
+      next();
+    });
+  };
+
+  const verifyAdmin = (req, res, next) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).send({ message: "Forbidden: Admins only" });
+    }
+    next();
+  };
+
+  // const verifyCustomer = (req, res, next) => {
+  //   if (req.user.role !== "customer") {
+  //     return res.status(403).send({ message: "Forbidden: Customer only" });
   //   }
+  //   next();
+  // };
 
-  //   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-  //     if (err) {
-  //       return res.status(403).send({ message: "Forbidden: Invalid token" });
-  //     }
-
-  //     if (req.query.email !== decoded.email) {
-  //       return res.status(403).send({ message: "Forbidden: Email mismatch" });
-  //     }
-  //     req.user = decoded;
-
-  //     next();
-  //   });
+  // const verifyRider = (req, res, next) => {
+  //   if (req.user.role !== "rider") {
+  //     return res.status(403).send({ message: "Forbidden: Riders only" });
+  //   }
+  //   next();
   // };
 
   try {
@@ -90,6 +111,51 @@ async function run() {
     });
 
     // users api
+    app.get("/users", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        let {
+          page = 1,
+          limit = 10,
+          search = "",
+          searchType = "name",
+          role = "",
+        } = req.query;
+
+     
+        page = parseInt(page);
+        limit = parseInt(limit);
+
+        const query = {};
+
+   
+        if (search) {
+          const regex = new RegExp(search, "i");
+          if (searchType === "email") {
+            query.email = regex;
+          } else {
+            query.name = regex;
+          }
+        }
+
+      
+        if (role) {
+          query.role = role;
+        }
+
+        const skip = (page - 1) * limit;
+        const total = await usersCollection.countDocuments(query);
+        const users = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({ users, total });
+      } catch (err) {
+        res.status(500).send({ message: "Server error", error: err.message });
+      }
+    });
+
     app.get("/users/:email/role", async (req, res) => {
       try {
         const email = req.params.email;
@@ -113,11 +179,6 @@ async function run() {
     app.post("/users", async (req, res) => {
       const user = req.body;
       const email = user.email;
-      const password = user.password;
-      if (password) {
-        const hashedpassword = await bcrypt.hash(password, 10);
-        user.password = hashedpassword;
-      }
 
       const userExists = await usersCollection.findOne({ email });
 
@@ -173,5 +234,5 @@ async function run() {
 run().catch(console.dir);
 
 app.listen(port, () => {
-  console.log(`Assignment 12 running on port ${port}`);
+  console.log(`Sam's Kitchen running on port ${port}`);
 });
