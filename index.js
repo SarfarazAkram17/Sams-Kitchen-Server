@@ -71,8 +71,8 @@ async function run() {
 
       res.cookie("token", token, {
         httpOnly: true,
-        secure: false,
-        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         maxAge: 24 * 60 * 60 * 1000,
       });
 
@@ -83,13 +83,33 @@ async function run() {
     app.post("/logout", (req, res) => {
       res.clearCookie("token", {
         httpOnly: true,
-        secure: false,
-        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       });
       res.send({ success: true });
     });
 
     // users api
+    app.get("/users/:email/role", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({ role: user.role });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       const email = user.email;
@@ -114,6 +134,35 @@ async function run() {
 
       const result = await usersCollection.insertOne(user);
       res.send(result);
+    });
+
+    app.patch("/users", async (req, res) => {
+      try {
+        const { name, photo } = req.body;
+        const { email } = req.query;
+
+        if (!email) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Email is required." });
+        }
+
+        const filter = { email };
+        const updateDoc = {
+          $set: {
+            name,
+            photo,
+          },
+        };
+
+        const result = await usersCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (_) {
+        res.status(500).send({
+          success: false,
+          message: "Internal server error while updating profile",
+        });
+      }
     });
 
     await client.db("admin").command({ ping: 1 });
