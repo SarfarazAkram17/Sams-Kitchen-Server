@@ -79,6 +79,7 @@ async function run() {
 
     const db = client.db("Sams-Kitchen");
     const usersCollection = db.collection("usersCollection");
+    const foodsCollection = db.collection("foodsCollection");
 
     // JWT API
     app.post("/jwt", async (req, res) => {
@@ -121,13 +122,11 @@ async function run() {
           role = "",
         } = req.query;
 
-     
         page = parseInt(page);
         limit = parseInt(limit);
 
         const query = {};
 
-   
         if (search) {
           const regex = new RegExp(search, "i");
           if (searchType === "email") {
@@ -137,7 +136,6 @@ async function run() {
           }
         }
 
-      
         if (role) {
           query.role = role;
         }
@@ -223,6 +221,40 @@ async function run() {
           success: false,
           message: "Internal server error while updating profile",
         });
+      }
+    });
+
+    // foods api
+    app.post("/foods", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        const {
+          name,
+          price,
+          discount = 0,
+          description = "",
+          images,
+          available = true,
+          addedAt,
+        } = req.body;
+
+        const newFood = {
+          name: name.trim(),
+          price,
+          discount,
+          description: description.trim(),
+          images,
+          available,
+          addedAt,
+        };
+
+        const result = await foodsCollection.insertOne(newFood);
+
+        res.status(201).json({
+          message: "Food added successfully",
+          foodId: result.insertedId,
+        });
+      } catch (error) {
+        res.status(500).json({ error: "Internal server error" });
       }
     });
 
