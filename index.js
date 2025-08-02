@@ -3,10 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const port = 3000;
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 // const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
-const bcrypt = require("bcrypt");
 const cookieParser = require("cookie-parser");
 
 app.use(
@@ -195,7 +194,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/users", async (req, res) => {
+    app.patch("/users", verifyJwt, async (req, res) => {
       try {
         const { name, photo } = req.body;
         const { email } = req.query;
@@ -225,6 +224,48 @@ async function run() {
     });
 
     // foods api
+    app.get("/foods", async (req, res) => {
+      try {
+        let { page = 1, limit = 10 } = req.query;
+
+        page = parseInt(page);
+        limit = parseInt(limit);
+
+        const skip = (page - 1) * limit;
+
+        const total = await foodsCollection.countDocuments();
+        const foods = await foodsCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({ foods, total });
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Failed to fetch foods", error: err.message });
+      }
+    });
+
+    app.get("/foods/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!food) {
+          return res.status(404).send({ message: "Food not found" });
+        }
+
+        res.send(food);
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Failed to fetch food", error: err.message });
+      }
+    });
+
     app.post("/foods", verifyJwt, verifyAdmin, async (req, res) => {
       try {
         const {
@@ -253,8 +294,80 @@ async function run() {
           message: "Food added successfully",
           foodId: result.insertedId,
         });
-      } catch (error) {
+      } catch (_) {
         res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    app.patch("/foods/:id", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        const foodId = req.params.id;
+        const {
+          name,
+          price,
+          discount,
+          description,
+          available,
+          imagesToAdd = [],
+          imagesToRemove = [],
+        } = req.body;
+
+        const query = { _id: new ObjectId(foodId) };
+        const food = await foodsCollection.findOne(query);
+
+        if (!food) {
+          return res.status(404).json({ error: "Food not found" });
+        }
+
+        // Step 1: Update main fields + pull removed images
+        const update1 = {
+          $set: {
+            name,
+            price,
+            discount,
+            description,
+            available,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+
+        if (imagesToRemove.length > 0) {
+          update1.$pull = {
+            images: { $in: imagesToRemove },
+          };
+        }
+
+        await foodsCollection.updateOne(query, update1);
+
+        // Step 2: Push new images (if any)
+        if (imagesToAdd.length > 0) {
+          const update2 = {
+            $push: {
+              images: { $each: imagesToAdd },
+            },
+          };
+          await foodsCollection.updateOne(query, update2);
+        }
+
+        res.send({ success: true, message: "Food updated successfully" });
+      } catch (_) {
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    app.delete("/foods/:id", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const result = await foodsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        res.send(result);
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Failed to delete food", error: err.message });
       }
     });
 
