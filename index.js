@@ -5,8 +5,9 @@ const app = express();
 const port = 3000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
-// const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
+const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 const cookieParser = require("cookie-parser");
+const { default: axios } = require("axios");
 
 app.use(
   cors({
@@ -16,6 +17,7 @@ app.use(
 );
 app.use(express.json());
 app.use(cookieParser());
+app.use(express.urlencoded());
 
 app.get("/", (req, res) => {
   res.send("Sam's Kitchen is cooking");
@@ -79,6 +81,146 @@ async function run() {
     const db = client.db("Sams-Kitchen");
     const usersCollection = db.collection("usersCollection");
     const foodsCollection = db.collection("foodsCollection");
+    const ordersCollection = db.collection("ordersCollection");
+    const paymentsCollection = db.collection("paymentsCollection");
+
+    // create ssl payment
+    app.post("/create-ssl-payment", verifyJwt, async (req, res) => {
+      const store_id = process.env.STORE_ID;
+      const store_passwd = process.env.STORE_PASSWORD;
+
+      const payment = req.body;
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(payment.orderId),
+      });
+
+      const tran_id = new ObjectId().toString();
+      payment.transactionId = tran_id;
+
+      const initiate = {
+        store_id,
+        store_passwd,
+        total_amount: parseInt(order.total),
+        currency: "BDT",
+        tran_id,
+        success_url: "http://localhost:3000/success-payment",
+        fail_url: "http://localhost:3000/fail-payment",
+        cancel_url: "http://localhost:3000/cancel-payment",
+        ipn_url: "http://localhost:3000/ipn-success-payment",
+        shipping_method: "Courier",
+        product_name: "Foods",
+        product_category: "Food",
+        product_profile: "general",
+        cus_name: payment.name,
+        cus_email: payment.email,
+        cus_add1: order.customer.address.district,
+        cus_city: order.customer.address.thana,
+        cus_state: order.customer.address.region,
+        cus_country: "Bangladesh",
+        cus_phone: order.customer.phone,
+        ship_name: payment.name,
+        ship_add1: order.customer.address.district,
+        ship_city: order.customer.address.thana,
+        ship_state: order.customer.address.region,
+        ship_postcode: 1000,
+        ship_country: "Bangladesh",
+      };
+
+      const iniRes = await axios({
+        url: "https://sandbox.sslcommerz.com/gwprocess/v4/api.php",
+        method: "POST",
+        data: initiate,
+        headers: {
+          "Content-type": "application/x-www-form-urlencoded",
+        },
+      });
+
+      const gatewayUrl = iniRes?.data?.GatewayPageURL;
+
+      await paymentsCollection.insertOne(payment);
+
+      res.status(201).send({
+        gatewayUrl,
+      });
+    });
+
+    app.post("/success-payment", async (req, res) => {
+      const paymentSuccess = req.body;
+      const query = {
+        transactionId: paymentSuccess.tran_id,
+      };
+      const payment = await paymentsCollection.findOne(query);
+
+      const store_id = process.env.STORE_ID;
+      const store_passwd = process.env.STORE_PASSWORD;
+
+      const isValidPayment = await axios.get(
+        `https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=${store_id}&store_passwd=${store_passwd}`
+      );
+
+      if (isValidPayment?.data?.status === "VALID") {
+        // update order payment status
+        const updatedOrder = {
+          $set: {
+            payment_status: "paid",
+            paidAt: new Date().toISOString(),
+          },
+        };
+        const updateOrder = await ordersCollection.updateOne(
+          { _id: new ObjectId(payment.orderId) },
+          updatedOrder
+        );
+
+        // update payments status
+        const updatedPayment = {
+          $set: {
+            status: "payment done",
+            paid_at: new Date().toISOString(),
+          },
+        };
+        const updatePaymentStatus = await paymentsCollection.updateOne(
+          query,
+          updatedPayment
+        );
+        return res.redirect("http://localhost:5173/dashboard/myOrders");
+      } else {
+        const deletePayment = await paymentsCollection.deleteOne(query);
+        res.redirect("http://localhost:5173/dashboard/myOrders");
+        return res.send({ message: "Invalid payment" });
+      }
+    });
+
+    app.post("/fail-payment", async (req, res) => {
+      const failPayment = req.body;
+      const query = { transactionId: failPayment.tran_id };
+
+      await paymentsCollection.deleteOne(query);
+
+      return res.redirect("http://localhost:5173/dashboard/myOrders");
+    });
+
+    app.post("/cancel-payment", async (req, res) => {
+      const cancelPayment = req.body;
+      const query = { transactionId: cancelPayment.tran_id };
+
+      await paymentsCollection.deleteOne(query);
+
+      return res.redirect("http://localhost:5173/dashboard/myOrders");
+    });
+
+    // creating payment intent for stripe
+    app.post("/create-payment-intent", verifyJwt, async (req, res) => {
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: req.body.amountInCents,
+          currency: "bdt",
+          payment_method_types: ["card"],
+        });
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
 
     // JWT API
     app.post("/jwt", async (req, res) => {
@@ -299,7 +441,8 @@ async function run() {
       }
     });
 
-    app.post("/cartFoods", async (req, res) => {
+    // name post but its for get
+    app.post("/foods/cart", async (req, res) => {
       try {
         const { ids } = req.body;
 
@@ -363,6 +506,89 @@ async function run() {
         res
           .status(500)
           .send({ message: "Failed to delete food", error: err.message });
+      }
+    });
+
+    // orders api
+    app.get("/orders/:id", verifyJwt, async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const result = await ordersCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        res.send(result);
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Internal server error", error: err.message });
+      }
+    });
+
+    app.post("/orders", verifyJwt, async (req, res) => {
+      try {
+        const orderData = req.body;
+
+        if (
+          !orderData.customer ||
+          !orderData.items ||
+          !Array.isArray(orderData.items) ||
+          orderData.items.length === 0
+        ) {
+          return res.status(400).send({ message: "Invalid order data" });
+        }
+
+        const result = await ordersCollection.insertOne(orderData);
+        res.send(result);
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Internal server error", error: err.message });
+      }
+    });
+
+    // payments api
+    app.post("/payments", verifyJwt, async (req, res) => {
+      try {
+        const { orderId, email, amount, paymentMethod, transactionId } =
+          req.body;
+
+        // 1. Update order's payment_status
+        const updateResult = await ordersCollection.updateOne(
+          { _id: new ObjectId(orderId) },
+          {
+            $set: {
+              payment_status: "paid",
+              paidAt: new Date().toISOString(),
+            },
+          }
+        );
+
+        if (updateResult.modifiedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Order not found or already paid" });
+        }
+
+        // 2. Insert payment record
+        const paymentDoc = {
+          orderId,
+          email,
+          amount,
+          paymentMethod,
+          transactionId,
+          paidAt: new Date().toISOString(),
+          status: "payment done",
+        };
+
+        const paymentResult = await paymentsCollection.insertOne(paymentDoc);
+        console.log("payment res", paymentResult);
+        res.status(201).send({
+          message: "Payment recorded and parcel marked as paid",
+          insertedId: paymentResult.insertedId,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to record payment" });
       }
     });
 
