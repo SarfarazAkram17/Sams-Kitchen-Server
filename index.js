@@ -273,7 +273,7 @@ async function run() {
           price,
           discount = 0,
           description = "",
-          images,
+          image,
           available = true,
           addedAt,
         } = req.body;
@@ -283,7 +283,7 @@ async function run() {
           price,
           discount,
           description: description.trim(),
-          images,
+          image,
           available,
           addedAt,
         };
@@ -299,18 +299,29 @@ async function run() {
       }
     });
 
+    app.post("/cartFoods", async (req, res) => {
+      try {
+        const { ids } = req.body;
+
+        const foodIds = ids.map((id) => new ObjectId(id));
+
+        const foods = await foodsCollection
+          .find({ _id: { $in: foodIds } })
+          .toArray();
+
+        res.send(foods);
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Failed to fetch foods", error: err.message });
+      }
+    });
+
     app.patch("/foods/:id", verifyJwt, verifyAdmin, async (req, res) => {
       try {
         const foodId = req.params.id;
-        const {
-          name,
-          price,
-          discount,
-          description,
-          available,
-          imagesToAdd = [],
-          imagesToRemove = [],
-        } = req.body;
+        const { name, price, discount, description, available, image } =
+          req.body;
 
         const query = { _id: new ObjectId(foodId) };
         const food = await foodsCollection.findOne(query);
@@ -319,37 +330,21 @@ async function run() {
           return res.status(404).json({ error: "Food not found" });
         }
 
-        // Step 1: Update main fields + pull removed images
-        const update1 = {
+        const updateDoc = {
           $set: {
             name,
             price,
             discount,
             description,
             available,
+            image,
             updatedAt: new Date().toISOString(),
           },
         };
 
-        if (imagesToRemove.length > 0) {
-          update1.$pull = {
-            images: { $in: imagesToRemove },
-          };
-        }
+        const result = await foodsCollection.updateOne(query, updateDoc);
 
-        await foodsCollection.updateOne(query, update1);
-
-        // Step 2: Push new images (if any)
-        if (imagesToAdd.length > 0) {
-          const update2 = {
-            $push: {
-              images: { $each: imagesToAdd },
-            },
-          };
-          await foodsCollection.updateOne(query, update2);
-        }
-
-        res.send({ success: true, message: "Food updated successfully" });
+        res.send(result);
       } catch (_) {
         res.status(500).json({ error: "Internal server error" });
       }
