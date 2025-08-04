@@ -514,7 +514,7 @@ async function run() {
     // orders api
     app.get("/orders", verifyJwt, async (req, res) => {
       try {
-        const email = req.query.email;
+        const { payment_status, status, email } = req.query;
         let { page = 1, limit = 10 } = req.query;
 
         page = parseInt(page);
@@ -524,7 +524,10 @@ async function run() {
           return res.status(400).send({ message: "Email is required" });
         }
 
-        const query = { "customer.email": email };
+        let query = { "customer.email": email };
+        if (payment_status, status) {
+          query = { payment_status, status };
+        }
 
         const skip = (page - 1) * limit;
 
@@ -636,6 +639,46 @@ async function run() {
       }
     });
 
+    app.patch(
+      "/orders/:id/assign",
+      verifyJwt,
+      verifyAdmin,
+      async (req, res) => {
+        const orderId = req.params.id;
+        const { riderId, riderName, riderEmail } = req.body;
+
+        try {
+          // Update order
+          await ordersCollection.updateOne(
+            { _id: new ObjectId(orderId) },
+            {
+              $set: {
+                status: "assigned",
+                assigned_rider_id: riderId,
+                assigned_rider_name: riderName,
+                assigned_rider_email: riderEmail,
+                assignedAt: new Date().toISOString(),
+              },
+            }
+          );
+
+          // Update rider
+          await ridersCollection.updateOne(
+            { _id: new ObjectId(riderId) },
+            {
+              $set: {
+                work_status: "in_delivery",
+              },
+            }
+          );
+
+          res.send({ message: "Rider assigned" });
+        } catch (err) {
+          res.status(500).send({ message: err.message });
+        }
+      }
+    );
+
     // payments api
     app.post("/payments", verifyJwt, async (req, res) => {
       try {
@@ -692,6 +735,24 @@ async function run() {
         res.send(pendingRiders);
       } catch (error) {
         res.status(500).send({ message: "Failed to load pending riders" });
+      }
+    });
+
+    app.get("/riders/available", verifyJwt, verifyAdmin, async (req, res) => {
+      const { thana } = req.query;
+
+      try {
+        const riders = await ridersCollection
+          .find({
+            thana,
+            status: "active",
+            work_status: "available",
+          })
+          .toArray();
+
+        res.send(riders);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to load riders" });
       }
     });
 
