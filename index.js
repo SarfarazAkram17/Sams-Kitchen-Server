@@ -163,6 +163,7 @@ async function run() {
         const updatedOrder = {
           $set: {
             payment_status: "paid",
+            status: "not_assigned",
             paidAt: new Date().toISOString(),
           },
         };
@@ -378,7 +379,7 @@ async function run() {
         const total = await foodsCollection.countDocuments();
         const foods = await foodsCollection
           .find({})
-          .sort({ createdAt: -1 })
+          .sort({ addedAt: -1 })
           .skip(skip)
           .limit(limit)
           .toArray();
@@ -510,6 +511,38 @@ async function run() {
     });
 
     // orders api
+    app.get("/orders", verifyJwt, async (req, res) => {
+      try {
+        const email = req.query.email;
+        let { page = 1, limit = 10 } = req.query;
+
+        page = parseInt(page);
+        limit = parseInt(limit);
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const query = { "customer.email": email };
+
+        const skip = (page - 1) * limit;
+
+        const total = await ordersCollection.countDocuments(query);
+        const orders = await ordersCollection
+          .find(query)
+          .sort({ placedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({ orders, total });
+      } catch (err) {
+        res
+          .status(500)
+          .send({ message: "Internal server error", error: err.message });
+      }
+    });
+
     app.get("/orders/:id", verifyJwt, async (req, res) => {
       try {
         const { id } = req.params;
@@ -547,6 +580,61 @@ async function run() {
       }
     });
 
+    app.patch("/orders/:id", verifyJwt, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { status } = req.body;
+
+        if (!status) {
+          return res.status(400).send({ message: "Status is required" });
+        }
+
+        // ✅ Role-based validation
+        if (
+          ["picked", "delivered"].includes(status) &&
+          req.user.role !== "rider"
+        ) {
+          return res.status(403).send({ message: "Forbidden: Rider only" });
+        }
+        if (status === "assigned" && req.user.role !== "admin") {
+          return res.status(403).send({ message: "Forbidden: Admin only" });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            status,
+          },
+        };
+
+        // Add timestamps
+        if (status === "cancelled")
+          updateDoc.$set.cancelledAt = new Date().toISOString();
+        if (status === "assigned")
+          updateDoc.$set.assignedAt = new Date().toISOString();
+        if (status === "picked")
+          updateDoc.$set.pickedAt = new Date().toISOString();
+        if (status === "delivered")
+          updateDoc.$set.deliveredAt = new Date().toISOString();
+
+        const result = await ordersCollection.updateOne(filter, updateDoc);
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Order not found" });
+        }
+
+        res.send({
+          message: "Order status updated",
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to update order status",
+          error: error.message,
+        });
+      }
+    });
+
     // payments api
     app.post("/payments", verifyJwt, async (req, res) => {
       try {
@@ -559,6 +647,7 @@ async function run() {
           {
             $set: {
               payment_status: "paid",
+              status: "not_assigned",
               paidAt: new Date().toISOString(),
             },
           }
