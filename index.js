@@ -61,12 +61,12 @@ async function run() {
     next();
   };
 
-  // const verifyCustomer = (req, res, next) => {
-  //   if (req.user.role !== "customer") {
-  //     return res.status(403).send({ message: "Forbidden: Customer only" });
-  //   }
-  //   next();
-  // };
+  const verifyCustomer = (req, res, next) => {
+    if (req.user.role !== "customer") {
+      return res.status(403).send({ message: "Forbidden: Customer only" });
+    }
+    next();
+  };
 
   // const verifyRider = (req, res, next) => {
   //   if (req.user.role !== "rider") {
@@ -83,6 +83,7 @@ async function run() {
     const foodsCollection = db.collection("foodsCollection");
     const ordersCollection = db.collection("ordersCollection");
     const paymentsCollection = db.collection("paymentsCollection");
+    const ridersCollection = db.collection("ridersCollection");
 
     // create ssl payment
     app.post("/create-ssl-payment", verifyJwt, async (req, res) => {
@@ -100,7 +101,7 @@ async function run() {
       const initiate = {
         store_id,
         store_passwd,
-        total_amount: parseInt(order.total),
+        total_amount: order.total,
         currency: "BDT",
         tran_id,
         success_url: "http://localhost:3000/success-payment",
@@ -671,13 +672,94 @@ async function run() {
         };
 
         const paymentResult = await paymentsCollection.insertOne(paymentDoc);
-        console.log("payment res", paymentResult);
+
         res.status(201).send({
           message: "Payment recorded and parcel marked as paid",
           insertedId: paymentResult.insertedId,
         });
       } catch (error) {
         res.status(500).send({ message: "Failed to record payment" });
+      }
+    });
+
+    // riders api
+    app.get("/riders/pending", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        const pendingRiders = await ridersCollection
+          .find({ status: "pending" })
+          .toArray();
+
+        res.send(pendingRiders);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load pending riders" });
+      }
+    });
+
+    app.post("/riders", verifyJwt, verifyCustomer, async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        // Check if already applied
+        const exists = await ridersCollection.findOne({ email });
+        if (exists) {
+          return res.send({ message: "You have already applied." });
+        }
+
+        const newCandidate = req.body;
+
+        const result = await ridersCollection.insertOne(newCandidate);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    app.patch(
+      "/riders/:id/status",
+      verifyJwt,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const { status = "active", email } = req.body;
+        const query = { _id: new ObjectId(id) };
+
+        const updatedDoc = {
+          $set: {
+            status,
+            work_status: "available",
+            activeAt: new Date().toISOString(),
+          },
+        };
+
+        try {
+          const result = await ridersCollection.updateOne(query, updatedDoc);
+
+          const userQuery = { email };
+          const updatedUserDoc = {
+            $set: {
+              role: "rider",
+            },
+          };
+          const updatedRoleResult = await usersCollection.updateOne(
+            userQuery,
+            updatedUserDoc
+          );
+
+          res.send(result);
+        } catch (err) {
+          res.status(500).send({ message: "Failed to update rider status" });
+        }
+      }
+    );
+
+    app.delete("/riders/:id", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        const query = { _id: new ObjectId(req.params.id) };
+
+        const result = await ridersCollection.deleteOne(query);
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update rider status" });
       }
     });
 
