@@ -947,6 +947,267 @@ async function run() {
       }
     });
 
+    // stats api
+    app.get("/customer/stats", verifyJwt, verifyCustomer, async (req, res) => {
+      try {
+        const { email } = req.query;
+        const query = { "customer.email": email };
+
+        // 1. Total Orders
+        const totalOrders = await ordersCollection.countDocuments(query);
+
+        // 2. Completed Orders (Status: 'delivered')
+        const completedOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "delivered",
+        });
+
+        // 3. Processing Orders (Status: 'not_assigned')
+        const processingOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "not_assigned",
+        });
+
+        // 4. Dispatched Orders (Status: 'picked')
+        const dispatchedOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "picked",
+        });
+
+        // 5. Total Spent (Sum of all order totals)
+        const totalSpent = await ordersCollection
+          .aggregate([
+            { $match: { ...query, payment_status: "paid" } }, // Filter by customer email
+            { $group: { _id: null, totalSpent: { $sum: "$total" } } }, // Sum of the 'total' field for all orders
+          ])
+          .toArray();
+
+        const totalSpentAmount =
+          totalSpent.length > 0 ? totalSpent[0].totalSpent : 0;
+
+        // Respond with all stats
+        res.status(200).send({
+          totalOrders,
+          totalSpent: totalSpentAmount,
+          processingOrders,
+          dispatchedOrders,
+          completedOrders,
+        });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
+    app.get("/admin/stats", verifyJwt, verifyAdmin, async (req, res) => {
+      try {
+        // 1. Total Number of Users
+        const totalUsers = await usersCollection.countDocuments();
+
+        // 2. Total Number of Riders
+        const totalRiders = await ridersCollection.countDocuments();
+
+        // 3. Total Orders
+        const totalOrders = await ordersCollection.countDocuments();
+
+        // 4. Total Payments (Sum of all paid orders)
+        const totalPayments = await ordersCollection
+          .aggregate([
+            { $match: { payment_status: "paid" } },
+            { $group: { _id: null, totalPayments: { $sum: "$total" } } },
+          ])
+          .toArray();
+
+        const totalPaymentsAmount =
+          totalPayments.length > 0 ? totalPayments[0].totalPayments : 0;
+
+        // 5. Processing Orders (Orders with status "not_assigned")
+        const processingOrders = await ordersCollection.countDocuments({
+          status: "not_assigned",
+        });
+
+        // 6. Completed Orders (Orders with status "delivered")
+        const completedOrders = await ordersCollection.countDocuments({
+          status: "delivered",
+        });
+
+        // 7. Dispatched Orders (Orders with status "picked")
+        const dispatchedOrders = await ordersCollection.countDocuments({
+          status: "picked",
+        });
+
+        // Respond with all stats
+        res.status(200).send({
+          totalUsers,
+          totalRiders,
+          totalOrders,
+          totalPayments: totalPaymentsAmount,
+          processingOrders,
+          completedOrders,
+          dispatchedOrders,
+        });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
+    app.get("/rider/stats", async (req, res) => {
+      try {
+        const { email } = req.query; // Rider's email passed as query parameter
+
+        // Query for orders assigned to this rider
+        const query = { assigned_rider_email: email };
+
+        // 1. Total Orders
+        const totalOrders = await ordersCollection.countDocuments(query);
+
+        // 2. Completed Orders (Status: 'delivered')
+        const completedOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "delivered",
+        });
+
+        // 3. Picked Orders (Status: 'picked')
+        const pickedOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "picked",
+        });
+
+        // 4. Pending Orders (Status: 'assigned')
+        const pendingOrders = await ordersCollection.countDocuments({
+          ...query,
+          status: "assigned",
+        });
+
+        // 5. Calculate Total Earnings (Sum of deliveryCharge or calculated earnings)
+        const totalEarningsData = await ordersCollection
+          .aggregate([
+            {
+              $match: { ...query, status: "delivered" },
+            },
+            {
+              $project: {
+                deliveryCharge: 1,
+                items: 1,
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                totalEarnings: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$deliveryCharge", 0] },
+                      {
+                        $sum: [
+                          {
+                            $cond: [{ $gt: [{ $size: "$items" }, 1] }, 50, 30],
+                          },
+                        ],
+                      },
+                      "$deliveryCharge",
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        const totalEarningsAmount =
+          totalEarningsData.length > 0 ? totalEarningsData[0].totalEarnings : 0;
+
+        // 6. Calculate Cashout Money (Sum of 'cashed_out' orders deliveryCharge or calculated earnings)
+        const cashoutMoneyData = await ordersCollection
+          .aggregate([
+            {
+              $match: { ...query, cashout_status: "cashed_out" },
+            },
+            {
+              $project: {
+                deliveryCharge: 1,
+                items: 1,
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                cashoutMoney: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$deliveryCharge", 0] },
+                      {
+                        $sum: [
+                          {
+                            $cond: [{ $gt: [{ $size: "$items" }, 1] }, 50, 30],
+                          },
+                        ],
+                      },
+                      "$deliveryCharge",
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        const cashoutMoneyAmount =
+          cashoutMoneyData.length > 0 ? cashoutMoneyData[0].cashoutMoney : 0;
+
+        // 7. Calculate Pending Cashout (Sum of orders without 'cashed_out' status deliveryCharge or calculated earnings)
+        const pendingCashoutData = await ordersCollection
+          .aggregate([
+            {
+              $match: { ...query, cashout_status: { $ne: "cashed_out" } },
+            },
+            {
+              $project: {
+                deliveryCharge: 1,
+                items: 1,
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                pendingCashout: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$deliveryCharge", 0] },
+                      {
+                        $sum: [
+                          {
+                            $cond: [{ $gt: [{ $size: "$items" }, 1] }, 50, 30],
+                          },
+                        ],
+                      },
+                      "$deliveryCharge",
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        const pendingCashoutAmount =
+          pendingCashoutData.length > 0
+            ? pendingCashoutData[0].pendingCashout
+            : 0;
+
+        res.status(200).send({
+          totalOrders,
+          totalEarnings: totalEarningsAmount,
+          pickedOrders,
+          pendingOrders,
+          completedOrders,
+          cashoutMoney: cashoutMoneyAmount,
+          pendingCashout: pendingCashoutAmount,
+        });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
   } finally {
