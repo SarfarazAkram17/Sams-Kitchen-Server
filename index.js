@@ -84,6 +84,7 @@ async function run() {
     const ordersCollection = db.collection("ordersCollection");
     const paymentsCollection = db.collection("paymentsCollection");
     const ridersCollection = db.collection("ridersCollection");
+    const reviewsCollection = db.collection("reviewsCollection");
 
     // create ssl payment
     app.post("/create-ssl-payment", verifyJwt, async (req, res) => {
@@ -1205,6 +1206,75 @@ async function run() {
         });
       } catch (error) {
         res.status(500).send({ message: error.message });
+      }
+    });
+
+    // reviews api
+    app.get("/reviews", async (req, res) => {
+      try {
+        const { foodId, page = 1, limit = 3 } = req.query;
+
+        if (!foodId) {
+          return res.status(400).json({ error: "Food Id is required" });
+        }
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const limitNum = parseInt(limit);
+
+        // Fetch paginated reviews
+        const reviews = await reviewsCollection
+          .find({ foodId })
+          .sort({ postedAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
+
+        // Count total reviews
+        const total = await reviewsCollection.countDocuments({ foodId });
+
+        res.json({ reviews, total });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    app.post("/reviews", verifyJwt, async (req, res) => {
+      try {
+        const {
+          foodId,
+          userPhoto,
+          userName,
+          rating,
+          comment,
+          images,
+          postedAt,
+        } = req.body;
+
+        if (!foodId || !rating || !comment) {
+          return res
+            .status(400)
+            .json({ error: "foodId, rating and comment are required." });
+        }
+
+        const review = {
+          foodId,
+          userPhoto,
+          userName,
+          rating: Number(rating),
+          comment,
+          images,
+          postedAt,
+        };
+
+        const result = await reviewsCollection.insertOne(review);
+
+        res.status(201).json({
+          success: true,
+          reviewId: result.insertedId,
+          message: "Review added successfully",
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
       }
     });
 
