@@ -68,12 +68,12 @@ async function run() {
     next();
   };
 
-  // const verifyRider = (req, res, next) => {
-  //   if (req.user.role !== "rider") {
-  //     return res.status(403).send({ message: "Forbidden: Riders only" });
-  //   }
-  //   next();
-  // };
+  const verifyRider = (req, res, next) => {
+    if (req.user.role !== "rider") {
+      return res.status(403).send({ message: "Forbidden: Riders only" });
+    }
+    next();
+  };
 
   try {
     await client.connect();
@@ -525,7 +525,7 @@ async function run() {
         }
 
         let query = { "customer.email": email };
-        if (payment_status, status) {
+        if ((payment_status, status)) {
           query = { payment_status, status };
         }
 
@@ -593,13 +593,6 @@ async function run() {
           return res.status(400).send({ message: "Status is required" });
         }
 
-        // ✅ Role-based validation
-        if (
-          ["picked", "delivered"].includes(status) &&
-          req.user.role !== "rider"
-        ) {
-          return res.status(403).send({ message: "Forbidden: Rider only" });
-        }
         if (status === "assigned" && req.user.role !== "admin") {
           return res.status(403).send({ message: "Forbidden: Admin only" });
         }
@@ -616,10 +609,6 @@ async function run() {
           updateDoc.$set.cancelledAt = new Date().toISOString();
         if (status === "assigned")
           updateDoc.$set.assignedAt = new Date().toISOString();
-        if (status === "picked")
-          updateDoc.$set.pickedAt = new Date().toISOString();
-        if (status === "delivered")
-          updateDoc.$set.deliveredAt = new Date().toISOString();
 
         const result = await ordersCollection.updateOne(filter, updateDoc);
 
@@ -676,6 +665,69 @@ async function run() {
         } catch (err) {
           res.status(500).send({ message: err.message });
         }
+      }
+    );
+
+    app.patch(
+      "/orders/:id/status",
+      verifyJwt,
+      verifyRider,
+      async (req, res) => {
+        const orderId = req.params.id;
+        const { status } = req.body;
+        const updatedDoc = {
+          status,
+        };
+
+        if (status === "picked") {
+          updatedDoc.pickedAt = new Date().toISOString();
+        } else if (status === "delivered") {
+          updatedDoc.deliveredAt = new Date().toISOString();
+        }
+
+        try {
+          const result = await ordersCollection.updateOne(
+            { _id: new ObjectId(orderId) },
+            {
+              $set: updatedDoc,
+            }
+          );
+
+          if (status === "delivered") {
+            const order = await ordersCollection.findOne({
+              _id: new ObjectId(orderId),
+            });
+
+            const query = { _id: new ObjectId(order.assigned_rider_id) };
+            const updateRiderWorkStatus = await ridersCollection.updateOne(
+              query,
+              { $set: { work_status: "available" } }
+            );
+          }
+
+          res.send({ result });
+        } catch (error) {
+          res.status(500).send({ message: error.message });
+        }
+      }
+    );
+
+    app.patch(
+      "/orders/:id/cashout",
+      verifyJwt,
+      verifyRider,
+      async (req, res) => {
+        const id = req.params.id;
+        const result = await ordersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              cashout_status: "cashed_out",
+              cashedOutAt: new Date().toISOString(),
+            },
+          }
+        );
+        res.send(result);
       }
     );
 
@@ -755,6 +807,77 @@ async function run() {
         res.status(500).send({ message: "Failed to load riders" });
       }
     });
+
+    app.get("/rider/orders", verifyJwt, verifyRider, async (req, res) => {
+      try {
+        const email = req.query.email;
+        let { page = 1, limit = 10 } = req.query;
+
+        page = parseInt(page);
+        limit = parseInt(limit);
+
+        if (!email) {
+          return res.status(400).send({ message: "Rider email is required" });
+        }
+
+        const skip = (page - 1) * limit;
+
+        const query = {
+          assigned_rider_email: email,
+          status: { $in: ["assigned", "picked"] },
+        };
+
+        const total = await ordersCollection.countDocuments(query);
+
+        const orders = await ordersCollection
+          .find(query)
+          .sort({ placedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+        res.send({ orders, total });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
+    app.get(
+      "/rider/completedOrders",
+      verifyJwt,
+      verifyRider,
+      async (req, res) => {
+        try {
+          const email = req.query.email;
+          let { page = 1, limit = 10 } = req.query;
+
+          page = parseInt(page);
+          limit = parseInt(limit);
+
+          if (!email) {
+            return res.status(400).send({ message: "Rider email is required" });
+          }
+
+          const skip = (page - 1) * limit;
+
+          const query = {
+            assigned_rider_email: email,
+            status: "delivered",
+          };
+
+          const total = await ordersCollection.countDocuments(query);
+          const orders = await ordersCollection
+            .find(query)
+            .sort({ deliveredAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+
+          res.send({ orders, total });
+        } catch (error) {
+          res.status(500).send({ message: error.message });
+        }
+      }
+    );
 
     app.post("/riders", verifyJwt, verifyCustomer, async (req, res) => {
       try {
