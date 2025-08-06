@@ -9,8 +9,20 @@ const verifyRider = require("../middleware/verifyRider");
 module.exports = (ridersCollection, usersCollection, ordersCollection) => {
   router.get("/pending", verifyJwt, verifyAdmin, async (req, res) => {
     try {
-      const pendingRiders = await ridersCollection.find({ status: "pending" }).toArray();
-      res.send(pendingRiders);
+      let { page = 1, limit = 10 } = req.query;
+
+      page = parseInt(page);
+      limit = parseInt(limit);
+
+      const skip = (page - 1) * limit;
+      const total = await ordersCollection.countDocuments(query);
+
+      const pendingRiders = await ridersCollection
+        .find({ status: "pending" })
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+      res.send({pendingRiders, total});
     } catch (error) {
       res.status(500).send({ message: "Failed to load pending riders" });
     }
@@ -41,7 +53,10 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
       }
 
       const skip = (page - 1) * limit;
-      const query = { assigned_rider_email: email, status: { $in: ["assigned", "picked"] } };
+      const query = {
+        assigned_rider_email: email,
+        status: { $in: ["assigned", "picked"] },
+      };
 
       const total = await ordersCollection.countDocuments(query);
       const orders = await ordersCollection
@@ -107,7 +122,11 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
     const query = { _id: new ObjectId(id) };
 
     const updatedDoc = {
-      $set: { status, work_status: "available", activeAt: new Date().toISOString() },
+      $set: {
+        status,
+        work_status: "available",
+        activeAt: new Date().toISOString(),
+      },
     };
 
     try {

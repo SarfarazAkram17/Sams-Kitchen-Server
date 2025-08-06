@@ -5,7 +5,11 @@ const axios = require("axios");
 const stripe = require("../config/stripe");
 const verifyJwt = require("../middleware/verifyJwt");
 
-module.exports = (ordersCollection, paymentsCollection) => {
+module.exports = (
+  ordersCollection,
+  paymentsCollection,
+  notificationsCollection
+) => {
   router.post("/create-ssl-payment", verifyJwt, async (req, res) => {
     const store_id = process.env.STORE_ID;
     const store_passwd = process.env.STORE_PASSWORD;
@@ -24,10 +28,10 @@ module.exports = (ordersCollection, paymentsCollection) => {
       total_amount: order.total,
       currency: "BDT",
       tran_id,
-      success_url: "http://localhost:3000/success-payment",
-      fail_url: "http://localhost:3000/fail-payment",
-      cancel_url: "http://localhost:3000/cancel-payment",
-      ipn_url: "http://localhost:3000/ipn-success-payment",
+      success_url: "http://localhost:3000/payments/success-payment",
+      fail_url: "http://localhost:3000/payments/fail-payment",
+      cancel_url: "http://localhost:3000/payments/cancel-payment",
+      ipn_url: "http://localhost:3000/payments/ipn-success-payment",
       shipping_method: "Courier",
       product_name: "Foods",
       product_category: "Food",
@@ -81,7 +85,10 @@ module.exports = (ordersCollection, paymentsCollection) => {
           paidAt: new Date().toISOString(),
         },
       };
-      await ordersCollection.updateOne({ _id: new ObjectId(payment.orderId) }, updatedOrder);
+      await ordersCollection.updateOne(
+        { _id: new ObjectId(payment.orderId) },
+        updatedOrder
+      );
 
       const updatedPayment = {
         $set: {
@@ -90,6 +97,29 @@ module.exports = (ordersCollection, paymentsCollection) => {
         },
       };
       await paymentsCollection.updateOne(query, updatedPayment);
+
+      const notificationForUser = {
+        type: "direct",
+        email: payment.email,
+        message: `Your payment is successfully done. Go to my orders and you can download your reciept.`,
+        relatedId: payment.orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `Get payment successfully.`,
+        relatedId: payment.orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       return res.redirect("http://localhost:5173/dashboard/myOrders");
     } else {
       await paymentsCollection.deleteOne(query);
@@ -141,7 +171,9 @@ module.exports = (ordersCollection, paymentsCollection) => {
       );
 
       if (updateResult.modifiedCount === 0) {
-        return res.status(404).send({ message: "Order not found or already paid" });
+        return res
+          .status(404)
+          .send({ message: "Order not found or already paid" });
       }
 
       const paymentDoc = {
@@ -155,6 +187,28 @@ module.exports = (ordersCollection, paymentsCollection) => {
       };
 
       const paymentResult = await paymentsCollection.insertOne(paymentDoc);
+
+      const notificationForUser = {
+        type: "direct",
+        email,
+        message: `Your payment is successfully done. Go to my orders and you can download your reciept.`,
+        relatedId: orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `Get payment successfully.`,
+        relatedId: orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
 
       res.status(201).send({
         message: "Payment recorded and parcel marked as paid",

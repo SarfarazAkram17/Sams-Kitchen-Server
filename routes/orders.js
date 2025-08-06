@@ -5,7 +5,11 @@ const verifyJwt = require("../middleware/verifyJwt");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const verifyRider = require("../middleware/verifyRider");
 
-module.exports = (ordersCollection, ridersCollection) => {
+module.exports = (
+  ordersCollection,
+  ridersCollection,
+  notificationsCollection
+) => {
   router.get("/", verifyJwt, async (req, res) => {
     try {
       const { payment_status, status, email } = req.query;
@@ -35,7 +39,9 @@ module.exports = (ordersCollection, ridersCollection) => {
 
       res.send({ orders, total });
     } catch (err) {
-      res.status(500).send({ message: "Internal server error", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Internal server error", error: err.message });
     }
   });
 
@@ -45,7 +51,9 @@ module.exports = (ordersCollection, ridersCollection) => {
       const result = await ordersCollection.findOne({ _id: new ObjectId(id) });
       res.send(result);
     } catch (err) {
-      res.status(500).send({ message: "Internal server error", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Internal server error", error: err.message });
     }
   });
 
@@ -53,14 +61,44 @@ module.exports = (ordersCollection, ridersCollection) => {
     try {
       const orderData = req.body;
 
-      if (!orderData.customer || !orderData.items || !Array.isArray(orderData.items) || orderData.items.length === 0) {
+      if (
+        !orderData.customer ||
+        !orderData.items ||
+        !Array.isArray(orderData.items) ||
+        orderData.items.length === 0
+      ) {
         return res.status(400).send({ message: "Invalid order data" });
       }
 
       const result = await ordersCollection.insertOne(orderData);
+
+      const notificationForUser = {
+        type: "direct",
+        email: orderData.customer.email,
+        message: `Your order is placed successfully.`,
+        relatedId: result.insertedId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `New order is placed.`,
+        relatedId: result.insertedId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       res.send(result);
     } catch (err) {
-      res.status(500).send({ message: "Internal server error", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Internal server error", error: err.message });
     }
   });
 
@@ -73,23 +111,37 @@ module.exports = (ordersCollection, ridersCollection) => {
         return res.status(400).send({ message: "Status is required" });
       }
 
-      if (status === "assigned" && req.user.role !== "admin") {
-        return res.status(403).send({ message: "Forbidden: Admin only" });
-      }
-
       const filter = { _id: new ObjectId(id) };
       const updateDoc = {
-        $set: { status },
+        $set: { status, cancelledAt: new Date().toISOString() },
       };
-
-      if (status === "cancelled") updateDoc.$set.cancelledAt = new Date().toISOString();
-      if (status === "assigned") updateDoc.$set.assignedAt = new Date().toISOString();
-
       const result = await ordersCollection.updateOne(filter, updateDoc);
 
       if (result.matchedCount === 0) {
         return res.status(404).send({ message: "Order not found" });
       }
+
+      const notificationForUser = {
+        type: "direct",
+        email: req.query.email,
+        message: `You cancelled a order.`,
+        relatedId: id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `Order cancelled.`,
+        relatedId: id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
 
       res.send({
         message: "Order status updated",
@@ -108,6 +160,10 @@ module.exports = (ordersCollection, ridersCollection) => {
     const { riderId, riderName, riderEmail } = req.body;
 
     try {
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(orderId),
+      });
+
       await ordersCollection.updateOne(
         { _id: new ObjectId(orderId) },
         {
@@ -121,10 +177,41 @@ module.exports = (ordersCollection, ridersCollection) => {
         }
       );
 
+      const notificationForUser = {
+        type: "direct",
+        email: order.customer.email,
+        message: `Your order is assigned to rider: ${riderName}.`,
+        relatedId: orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `You assigned rider to a order successfully.`,
+        relatedId: orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       await ridersCollection.updateOne(
         { _id: new ObjectId(riderId) },
         { $set: { work_status: "in_delivery" } }
       );
+
+      const notificationForRider = {
+        type: "direct",
+        email: riderEmail,
+        message: `You are assigned for a order. Go to the outlet and pick the order.`,
+        relatedId: orderId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+      await notificationsCollection.insertOne(notificationForRider);
 
       res.send({ message: "Rider assigned" });
     } catch (err) {
@@ -144,17 +231,89 @@ module.exports = (ordersCollection, ridersCollection) => {
     }
 
     try {
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(orderId),
+      });
+
       const result = await ordersCollection.updateOne(
         { _id: new ObjectId(orderId) },
         { $set: updatedDoc }
       );
 
-      if (status === "delivered") {
-        const order = await ordersCollection.findOne({ _id: new ObjectId(orderId) });
-        const query = { _id: new ObjectId(order.assigned_rider_id) };
-        await ridersCollection.updateOne(query, { $set: { work_status: "available" } });
+      if (status === "picked") {
+        const notificationForUser = {
+          type: "direct",
+          email: order.customer.email,
+          message: `Your order is picked by the rider.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForUser);
+
+        const notificationForAdmin = {
+          type: "direct",
+          email: "sarfarazakram16@gmail.com",
+          message: `A order is picked by a rider.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForAdmin);
+
+        const notificationForRider = {
+          type: "direct",
+          email: req.query.email,
+          message: `You picked a order.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForRider);
       }
 
+      if (status === "delivered") {
+        const query = { _id: new ObjectId(order.assigned_rider_id) };
+        await ridersCollection.updateOne(query, {
+          $set: { work_status: "available" },
+        });
+
+        const notificationForUser = {
+          type: "direct",
+          email: order.customer.email,
+          message: `Your order is delivered.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForUser);
+
+        const notificationForAdmin = {
+          type: "direct",
+          email: "sarfarazakram16@gmail.com",
+          message: `A order is delivered by a rider.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForAdmin);
+
+        const notificationForRider = {
+          type: "direct",
+          email: req.query.email,
+          message: `You Delivered a order.`,
+          relatedId: orderId.toString(),
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        };
+
+        await notificationsCollection.insertOne(notificationForRider);
+      }
       res.send({ result });
     } catch (error) {
       res.status(500).send({ message: error.message });
@@ -163,6 +322,8 @@ module.exports = (ordersCollection, ridersCollection) => {
 
   router.patch("/:id/cashout", verifyJwt, verifyRider, async (req, res) => {
     const id = req.params.id;
+    const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(id) },
       {
@@ -172,6 +333,29 @@ module.exports = (ordersCollection, ridersCollection) => {
         },
       }
     );
+
+    const notificationForRider = {
+      type: "direct",
+      email: order.assigned_rider_email,
+      message: `You cashout your earnings for a order.`,
+      relatedId: id.toString(),
+      createdAt: new Date().toISOString(),
+      isRead: false,
+    };
+
+    await notificationsCollection.insertOne(notificationForRider);
+
+    const notificationForAdmin = {
+      type: "direct",
+      email: "sarfarazakram16@gmail.com",
+      message: `Rider cashout his earnings. Rider name: ${order.assigned_rider_name}. Rider email: ${order.assigned_rider_email}.`,
+      relatedId: id.toString(),
+      createdAt: new Date().toISOString(),
+      isRead: false,
+    };
+
+    await notificationsCollection.insertOne(notificationForAdmin);
+
     res.send(result);
   });
 

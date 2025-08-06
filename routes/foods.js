@@ -4,7 +4,7 @@ const { ObjectId } = require("mongodb");
 const verifyJwt = require("../middleware/verifyJwt");
 const verifyAdmin = require("../middleware/verifyAdmin");
 
-module.exports = (foodsCollection) => {
+module.exports = (foodsCollection, notificationsCollection) => {
   router.get("/", async (req, res) => {
     try {
       let { page = 1, limit = 10 } = req.query;
@@ -22,7 +22,9 @@ module.exports = (foodsCollection) => {
 
       res.send({ foods, total });
     } catch (err) {
-      res.status(500).send({ message: "Failed to fetch foods", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Failed to fetch foods", error: err.message });
     }
   });
 
@@ -37,13 +39,23 @@ module.exports = (foodsCollection) => {
 
       res.send(food);
     } catch (err) {
-      res.status(500).send({ message: "Failed to fetch food", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Failed to fetch food", error: err.message });
     }
   });
 
   router.post("/", verifyJwt, verifyAdmin, async (req, res) => {
     try {
-      const { name, price, discount = 0, description = "", image, available = true, addedAt } = req.body;
+      const {
+        name,
+        price,
+        discount = 0,
+        description = "",
+        image,
+        available = true,
+        addedAt,
+      } = req.body;
 
       const newFood = {
         name: name.trim(),
@@ -56,6 +68,18 @@ module.exports = (foodsCollection) => {
       };
 
       const result = await foodsCollection.insertOne(newFood);
+      const foodId = result.insertedId;
+
+      // Create broadcast notification for all users
+      const notification = {
+        type: "broadcast",
+        message: `New food item: ${newFood.name}.`,
+        relatedId: foodId.toString(),
+        createdAt: new Date().toISOString(),
+        readBy: [],
+      };
+
+      await notificationsCollection.insertOne(notification);
 
       res.status(201).json({
         message: "Food added successfully",
@@ -71,11 +95,15 @@ module.exports = (foodsCollection) => {
       const { ids } = req.body;
       const foodIds = ids.map((id) => new ObjectId(id));
 
-      const foods = await foodsCollection.find({ _id: { $in: foodIds } }).toArray();
+      const foods = await foodsCollection
+        .find({ _id: { $in: foodIds } })
+        .toArray();
 
       res.send(foods);
     } catch (err) {
-      res.status(500).send({ message: "Failed to fetch foods", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Failed to fetch foods", error: err.message });
     }
   });
 
@@ -105,6 +133,18 @@ module.exports = (foodsCollection) => {
 
       const result = await foodsCollection.updateOne(query, updateDoc);
 
+      if (discount > food.discount) {
+        const notification = {
+          type: "broadcast",
+          message: `Discount added on food item: ${food.name}.`,
+          relatedId: foodId.toString(),
+          createdAt: new Date().toISOString(),
+          readBy: [],
+        };
+
+        await notificationsCollection.insertOne(notification);
+      }
+
       res.send(result);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -118,7 +158,9 @@ module.exports = (foodsCollection) => {
 
       res.send(result);
     } catch (err) {
-      res.status(500).send({ message: "Failed to delete food", error: err.message });
+      res
+        .status(500)
+        .send({ message: "Failed to delete food", error: err.message });
     }
   });
 

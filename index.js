@@ -11,7 +11,7 @@ const ridersRoutes = require("./routes/riders");
 const statsRoutes = require("./routes/stats");
 const reviewsRoutes = require("./routes/reviews");
 const usersRoutes = require("./routes/users");
-// const notificationsRoutes = require("./routes/notifications");
+const notificationsRoutes = require("./routes/notifications");
 
 const app = express();
 const port = 3000;
@@ -39,18 +39,18 @@ async function startServer() {
       paymentsCollection,
       ridersCollection,
       reviewsCollection,
-      // notificationsCollection,
+      notificationsCollection,
     } = await connectDB();
 
     app.use("/auth", authRoutes(usersCollection));
-    app.use("/foods", foodsRoutes(foodsCollection));
-    app.use("/orders", ordersRoutes(ordersCollection, ridersCollection));
-    app.use("/payments", paymentsRoutes(ordersCollection, paymentsCollection));
+    app.use("/foods", foodsRoutes(foodsCollection, notificationsCollection));
+    app.use("/orders", ordersRoutes(ordersCollection, ridersCollection, notificationsCollection));
+    app.use("/payments", paymentsRoutes(ordersCollection, paymentsCollection, notificationsCollection));
     app.use("/riders", ridersRoutes(ridersCollection, usersCollection, ordersCollection));
     app.use("/stats", statsRoutes(usersCollection, ordersCollection, ridersCollection));
     app.use("/reviews", reviewsRoutes(reviewsCollection));
     app.use("/users", usersRoutes(usersCollection));
-    // app.use("/notifications", notificationsRoutes(notificationsCollection));
+    app.use("/notifications", notificationsRoutes(notificationsCollection));
 
     app.listen(port, () => {
       console.log(`Sam's Kitchen running on port ${port}`);

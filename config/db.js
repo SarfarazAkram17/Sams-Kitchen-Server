@@ -14,6 +14,7 @@ const client = new MongoClient(uri, {
 async function connectDB() {
   try {
     await client.connect();
+
     const db = client.db("Sams-Kitchen");
     console.log("Connected to MongoDB!");
     return {
