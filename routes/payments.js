@@ -28,10 +28,10 @@ module.exports = (
       total_amount: order.total,
       currency: "BDT",
       tran_id,
-      success_url: "http://localhost:3000/payments/success-payment",
-      fail_url: "http://localhost:3000/payments/fail-payment",
-      cancel_url: "http://localhost:3000/payments/cancel-payment",
-      ipn_url: "http://localhost:3000/payments/ipn-success-payment",
+      success_url: "https://sams-kitchen.vercel.app/payments/success-payment",
+      fail_url: "https://sams-kitchen.vercel.app/payments/fail-payment",
+      cancel_url: "https://sams-kitchen.vercel.app/payments/cancel-payment",
+      ipn_url: "https://sams-kitchen.vercel.app/payments/ipn-success-payment",
       shipping_method: "Courier",
       product_name: "Foods",
       product_category: "Food",
@@ -120,10 +120,10 @@ module.exports = (
 
       await notificationsCollection.insertOne(notificationForAdmin);
 
-      return res.redirect("http://localhost:5173/dashboard/myOrders");
+      return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
     } else {
       await paymentsCollection.deleteOne(query);
-      res.redirect("http://localhost:5173/dashboard/myOrders");
+      res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
       return res.send({ message: "Invalid payment" });
     }
   });
@@ -132,14 +132,14 @@ module.exports = (
     const failPayment = req.body;
     const query = { transactionId: failPayment.tran_id };
     await paymentsCollection.deleteOne(query);
-    return res.redirect("http://localhost:5173/dashboard/myOrders");
+    return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
   });
 
   router.post("/cancel-payment", async (req, res) => {
     const cancelPayment = req.body;
     const query = { transactionId: cancelPayment.tran_id };
     await paymentsCollection.deleteOne(query);
-    return res.redirect("http://localhost:5173/dashboard/myOrders");
+    return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
   });
 
   router.post("/create-payment-intent", verifyJwt, async (req, res) => {

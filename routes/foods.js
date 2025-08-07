@@ -28,6 +28,34 @@ module.exports = (foodsCollection, notificationsCollection) => {
     }
   });
 
+  router.get("/search", async (req, res) => {
+    try {
+      const { name } = req.query;
+
+      if (!name) {
+        return res.status(400).send({ message: "Search query is required" });
+      }
+
+      const searchRegex = new RegExp(name, "i");
+
+      const foods = await foodsCollection
+        .find({ name: { $regex: searchRegex } })
+        .toArray();
+
+      if (foods.length === 0) {
+        return res
+          .status(404)
+          .send({ message: "No foods found with this name" });
+      }
+
+      res.send(foods);
+    } catch (err) {
+      res
+        .status(500)
+        .send({ message: "Failed to search foods", error: err.message });
+    }
+  });
+
   router.get("/:id", async (req, res) => {
     try {
       const id = req.params.id;

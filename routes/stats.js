@@ -4,7 +4,7 @@ const verifyJwt = require("../middleware/verifyJwt");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const verifyCustomer = require("../middleware/verifyCustomer");
 
-module.exports = (usersCollection, ordersCollection, ridersCollection) => {
+module.exports = (usersCollection, ordersCollection, ridersCollection, foodsCollection) => {
   router.get("/customer", verifyJwt, verifyCustomer, async (req, res) => {
     try {
       const { email } = req.query;
@@ -37,6 +37,7 @@ module.exports = (usersCollection, ordersCollection, ridersCollection) => {
     try {
       const totalUsers = await usersCollection.countDocuments();
       const totalRiders = await ridersCollection.countDocuments();
+      const totalFoods = await foodsCollection.countDocuments();
       const totalOrders = await ordersCollection.countDocuments();
 
       const totalPayments = await ordersCollection
@@ -52,6 +53,7 @@ module.exports = (usersCollection, ordersCollection, ridersCollection) => {
       res.status(200).send({
         totalUsers,
         totalRiders,
+        totalFoods,
         totalOrders,
         totalPayments: totalPaymentsAmount,
         processingOrders,

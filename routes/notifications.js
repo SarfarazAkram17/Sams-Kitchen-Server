@@ -3,7 +3,7 @@ const router = express.Router();
 const verifyJwt = require("../middleware/verifyJwt");
 
 module.exports = (notificationsCollection) => {
-  router.get("/", verifyJwt, async (req, res) => {
+  router.get("/", async (req, res) => {
     try {
       const { email, page = 1, limit = 7 } = req.query;
       if (!email) {
