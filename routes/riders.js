@@ -6,7 +6,12 @@ const verifyAdmin = require("../middleware/verifyAdmin");
 const verifyCustomer = require("../middleware/verifyCustomer");
 const verifyRider = require("../middleware/verifyRider");
 
-module.exports = (ridersCollection, usersCollection, ordersCollection) => {
+module.exports = (
+  ridersCollection,
+  usersCollection,
+  ordersCollection,
+  notificationsCollection
+) => {
   router.get("/pending", verifyJwt, verifyAdmin, async (req, res) => {
     try {
       let { page = 1, limit = 10 } = req.query;
@@ -15,14 +20,16 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
       limit = parseInt(limit);
 
       const skip = (page - 1) * limit;
-      const total = await ordersCollection.countDocuments(query);
+      const total = await ridersCollection.countDocuments({
+        status: "pending",
+      });
 
       const pendingRiders = await ridersCollection
         .find({ status: "pending" })
         .skip(skip)
         .limit(limit)
         .toArray();
-      res.send({pendingRiders, total});
+      res.send({ pendingRiders, total });
     } catch (error) {
       res.status(500).send({ message: "Failed to load pending riders" });
     }
@@ -110,6 +117,29 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
 
       const newCandidate = req.body;
       const result = await ridersCollection.insertOne(newCandidate);
+
+      const notificationForUser = {
+        type: "direct",
+        email: email,
+        message: `You apply for become a rider of Sam's Kitchen.`,
+        relatedId: result.insertedId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `${newCandidate.name} apply to become a rider.`,
+        relatedId: result.insertedId.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       res.send(result);
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -132,8 +162,32 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
     try {
       const result = await ridersCollection.updateOne(query, updatedDoc);
       const userQuery = { email };
+      const user = await usersCollection.findOne(userQuery);
       const updatedUserDoc = { $set: { role: "rider" } };
       await usersCollection.updateOne(userQuery, updatedUserDoc);
+
+      const notificationForUser = {
+        type: "direct",
+        email: user.email,
+        message: `Your rider application is approved. Now you are a rider of Sam's Kitchen.`,
+        relatedId: user._id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `You approved a rider application. Now ${user.name} is a rider.`,
+        relatedId: user._id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       res.send(result);
     } catch (err) {
       res.status(500).send({ message: "Failed to update rider status" });
@@ -143,6 +197,30 @@ module.exports = (ridersCollection, usersCollection, ordersCollection) => {
   router.delete("/:id", verifyJwt, verifyAdmin, async (req, res) => {
     try {
       const query = { _id: new ObjectId(req.params.id) };
+      const rider = await ridersCollection.findOne(query);
+
+      const notificationForUser = {
+        type: "direct",
+        email: rider.email,
+        message: `You are rejected from become a rider of Sam's Kitchen.`,
+        relatedId: rider._id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForUser);
+
+      const notificationForAdmin = {
+        type: "direct",
+        email: "sarfarazakram16@gmail.com",
+        message: `You rejected a rider application. Now ${rider.name} is rejected from become a rider of Sam's Kitchen.`,
+        relatedId: rider._id.toString(),
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      };
+
+      await notificationsCollection.insertOne(notificationForAdmin);
+
       const result = await ridersCollection.deleteOne(query);
       res.send(result);
     } catch (err) {

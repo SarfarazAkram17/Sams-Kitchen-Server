@@ -46,7 +46,7 @@ async function startServer() {
     app.use("/foods", foodsRoutes(foodsCollection, notificationsCollection));
     app.use("/orders", ordersRoutes(ordersCollection, ridersCollection, notificationsCollection));
     app.use("/payments", paymentsRoutes(ordersCollection, paymentsCollection, notificationsCollection));
-    app.use("/riders", ridersRoutes(ridersCollection, usersCollection, ordersCollection));
+    app.use("/riders", ridersRoutes(ridersCollection, usersCollection, ordersCollection, notificationsCollection));
     app.use("/stats", statsRoutes(usersCollection, ordersCollection, ridersCollection, foodsCollection));
     app.use("/reviews", reviewsRoutes(reviewsCollection));
     app.use("/users", usersRoutes(usersCollection));

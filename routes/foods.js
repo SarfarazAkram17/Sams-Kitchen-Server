@@ -7,7 +7,7 @@ const verifyAdmin = require("../middleware/verifyAdmin");
 module.exports = (foodsCollection, notificationsCollection) => {
   router.get("/", async (req, res) => {
     try {
-      let { page = 1, limit = 10 } = req.query;
+      let { page = 1, limit = 12 } = req.query;
       page = parseInt(page);
       limit = parseInt(limit);
       const skip = (page - 1) * limit;
@@ -15,6 +15,29 @@ module.exports = (foodsCollection, notificationsCollection) => {
       const total = await foodsCollection.countDocuments();
       const foods = await foodsCollection
         .find({})
+        .sort({ addedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+
+      res.send({ foods, total });
+    } catch (err) {
+      res
+        .status(500)
+        .send({ message: "Failed to fetch foods", error: err.message });
+    }
+  });
+
+  router.get("/offer", async (req, res) => {
+    try {
+      let { page = 1, limit = 12 } = req.query;
+      page = parseInt(page);
+      limit = parseInt(limit);
+      const skip = (page - 1) * limit;
+
+      const total = await foodsCollection.countDocuments({ discount: { $gt: 0 } });
+      const foods = await foodsCollection
+        .find({ discount: { $gt: 0 } })
         .sort({ addedAt: -1 })
         .skip(skip)
         .limit(limit)
