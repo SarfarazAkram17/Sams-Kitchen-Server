@@ -71,9 +71,9 @@ module.exports = (usersCollection, ordersCollection, ridersCollection, foodsColl
       const query = { assigned_rider_email: email };
 
       const totalOrders = await ordersCollection.countDocuments(query);
-      const completedOrders = await ordersCollection.countDocuments({ ...query, status: "delivered" });
-      const pickedOrders = await ordersCollection.countDocuments({ ...query, status: "picked" });
       const pendingOrders = await ordersCollection.countDocuments({ ...query, status: "assigned" });
+      const pickedOrders = await ordersCollection.countDocuments({ ...query, status: "picked" });
+      const completedOrders = await ordersCollection.countDocuments({ ...query, status: "delivered" });
 
       const totalEarningsData = await ordersCollection
         .aggregate([

@@ -28,6 +28,20 @@ module.exports = (foodsCollection, notificationsCollection) => {
     }
   });
 
+  router.get("/random", async (req, res) => {
+    try {
+      const foods = await foodsCollection
+        .aggregate([{ $sample: { size: 6 } }])
+        .toArray();
+
+      res.send(foods);
+    } catch (err) {
+      res
+        .status(500)
+        .send({ message: "Failed to fetch foods", error: err.message });
+    }
+  });
+
   router.get("/offer", async (req, res) => {
     try {
       let { page = 1, limit = 12 } = req.query;
@@ -35,7 +49,9 @@ module.exports = (foodsCollection, notificationsCollection) => {
       limit = parseInt(limit);
       const skip = (page - 1) * limit;
 
-      const total = await foodsCollection.countDocuments({ discount: { $gt: 0 } });
+      const total = await foodsCollection.countDocuments({
+        discount: { $gt: 0 },
+      });
       const foods = await foodsCollection
         .find({ discount: { $gt: 0 } })
         .sort({ addedAt: -1 })
@@ -44,6 +60,23 @@ module.exports = (foodsCollection, notificationsCollection) => {
         .toArray();
 
       res.send({ foods, total });
+    } catch (err) {
+      res
+        .status(500)
+        .send({ message: "Failed to fetch foods", error: err.message });
+    }
+  });
+
+  router.get("/offer/random", async (req, res) => {
+    try {
+      const foods = await foodsCollection
+        .aggregate([
+          { $match: { discount: { $gt: 0 } } },
+          { $sample: { size: 3 } },
+        ])
+        .toArray();
+
+      res.send(foods);
     } catch (err) {
       res
         .status(500)
