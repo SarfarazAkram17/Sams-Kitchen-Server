@@ -147,5 +147,5 @@ This is the backend for **Sam's Kitchen**, a full-stack food delivery platform w
 
 # 🛠️ Getting Started
 
-git clone https://github.com/SarfarazAkram17/Sams-Kitchen-Server.git
+git clone https://github.com/SarfarazAkram17/Sams-Kitchen-Server.git <br />
 cd Sams-Kitchen-Server
