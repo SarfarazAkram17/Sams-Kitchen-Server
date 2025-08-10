@@ -3,6 +3,7 @@ const router = express.Router();
 const verifyJwt = require("../middleware/verifyJwt");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const verifyCustomer = require("../middleware/verifyCustomer");
+const verifyRider = require("../middleware/verifyRider");
 
 module.exports = (usersCollection, ordersCollection, ridersCollection, foodsCollection) => {
   router.get("/customer", verifyJwt, verifyCustomer, async (req, res) => {
@@ -65,7 +66,7 @@ module.exports = (usersCollection, ordersCollection, ridersCollection, foodsColl
     }
   });
 
-  router.get("/rider", async (req, res) => {
+  router.get("/rider", verifyJwt, verifyRider, async (req, res) => {
     try {
       const { email } = req.query;
       const query = { assigned_rider_email: email };
