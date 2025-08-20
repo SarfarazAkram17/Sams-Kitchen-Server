@@ -256,7 +256,7 @@ module.exports = (
     }
   });
 
-  router.get("/rider", async (req, res) => {
+  router.get("/rider", verifyJwt, verifyRider, async (req, res) => {
     try {
       const { email } = req.query;
       const query = { assigned_rider_email: email };
@@ -278,7 +278,7 @@ module.exports = (
       const totalEarningsData = await ordersCollection
         .aggregate([
           { $match: { ...query, status: "delivered" } },
-          { $project: { deliveryCharge: 1, items: 1 } },
+          { $project: { deliveryCharge: 1, items: 1, deliveredAt: 1 } },
           {
             $group: {
               _id: null,
@@ -361,6 +361,59 @@ module.exports = (
           ? pendingCashoutData[0].pendingCashout
           : 0;
 
+      // Monthly earnings aggregation
+      const monthlyEarnings = await ordersCollection
+        .aggregate([
+          { $match: { ...query, status: "delivered" } },
+          {
+            $project: {
+              yearMonth: {
+                $dateFromParts: {
+                  year: { $year: { $toDate: "$deliveredAt" } },
+                  month: { $month: { $toDate: "$deliveredAt" } },
+                },
+              },
+              deliveryCharge: 1,
+              items: 1,
+            },
+          },
+          {
+            $group: {
+              _id: "$yearMonth",
+              earnings: {
+                $sum: {
+                  $cond: [
+                    { $eq: ["$deliveryCharge", 0] },
+                    {
+                      $sum: [
+                        { $cond: [{ $gt: [{ $size: "$items" }, 1] }, 50, 30] },
+                      ],
+                    },
+                    "$deliveryCharge",
+                  ],
+                },
+              },
+              orders: { $sum: 1 },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              month: { $dateToString: { format: "%b %Y", date: "$_id" } },
+              earnings: 1,
+              orders: 1,
+            },
+          },
+          { $sort: { month: 1 } },
+        ])
+        .toArray();
+
+      const formattedMonthlyEarnings = monthlyEarnings.map((m) => ({
+        month: m.month,
+        earnings: m.earnings,
+        orders: m.orders,
+      }));
+
       res.status(200).send({
         totalOrders,
         totalEarnings: totalEarningsAmount,
@@ -369,6 +422,7 @@ module.exports = (
         completedOrders,
         cashoutMoney: cashoutMoneyAmount,
         pendingCashout: pendingCashoutAmount,
+        monthlyEarnings: formattedMonthlyEarnings,
       });
     } catch (error) {
       res.status(500).send({ message: error.message });
