@@ -16,7 +16,12 @@ module.exports = (
       const { email } = req.query;
       const query = { "customer.email": email };
 
+      // Count orders by status
       const totalOrders = await ordersCollection.countDocuments(query);
+      const pendingOrders = await ordersCollection.countDocuments({
+        ...query,
+        status: "pending",
+      });
       const completedOrders = await ordersCollection.countDocuments({
         ...query,
         status: "delivered",
@@ -30,22 +35,78 @@ module.exports = (
         status: "picked",
       });
 
-      const totalSpent = await ordersCollection
+      // Total spent
+      const totalSpentAgg = await ordersCollection
         .aggregate([
           { $match: { ...query, payment_status: "paid" } },
           { $group: { _id: null, totalSpent: { $sum: "$total" } } },
         ])
         .toArray();
+      const totalSpent =
+        totalSpentAgg.length > 0 ? totalSpentAgg[0].totalSpent : 0;
 
-      const totalSpentAmount =
-        totalSpent.length > 0 ? totalSpent[0].totalSpent : 0;
+      // Monthly Orders
+      const monthlyOrdersAgg = await ordersCollection
+        .aggregate([
+          { $match: query },
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: "%b %Y",
+                  date: { $toDate: "$placedAt" },
+                },
+              },
+              orders: { $sum: 1 },
+              firstDate: { $min: { $toDate: "$placedAt" } },
+            },
+          },
+        ])
+        .toArray();
+      // Sort by date
+      monthlyOrdersAgg.sort(
+        (a, b) => new Date(a.firstDate) - new Date(b.firstDate)
+      );
+      const monthlyOrders = monthlyOrdersAgg.map((item) => ({
+        month: item._id,
+        orders: item.orders,
+      }));
+
+      // Monthly Payments
+      const monthlyPaymentsAgg = await ordersCollection
+        .aggregate([
+          { $match: { ...query, payment_status: "paid" } },
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: "%b %Y",
+                  date: { $toDate: "$paidAt" },
+                },
+              },
+              payments: { $sum: "$total" },
+              firstDate: { $min: { $toDate: "$paidAt" } },
+            },
+          },
+        ])
+        .toArray();
+      monthlyPaymentsAgg.sort(
+        (a, b) => new Date(a.firstDate) - new Date(b.firstDate)
+      );
+      const monthlyPayments = monthlyPaymentsAgg.map((item) => ({
+        month: item._id,
+        payments: Number(item.payments.toFixed(2)),
+      }));
 
       res.status(200).send({
         totalOrders,
-        totalSpent: totalSpentAmount,
+        pendingOrders,
+        completedOrders,
         processingOrders,
         dispatchedOrders,
-        completedOrders,
+        totalSpent,
+        monthlyOrders,
+        monthlyPayments,
       });
     } catch (error) {
       res.status(500).send({ message: error.message });
@@ -195,7 +256,7 @@ module.exports = (
     }
   });
 
-  router.get("/rider", verifyJwt, verifyRider, async (req, res) => {
+  router.get("/rider", async (req, res) => {
     try {
       const { email } = req.query;
       const query = { assigned_rider_email: email };
