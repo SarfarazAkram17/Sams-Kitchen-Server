@@ -14,6 +14,11 @@ module.exports = (
   router.get("/customer", verifyJwt, verifyCustomer, async (req, res) => {
     try {
       const { email } = req.query;
+
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+
       const query = { "customer.email": email };
 
       // Count orders by status
@@ -259,6 +264,11 @@ module.exports = (
   router.get("/rider", verifyJwt, verifyRider, async (req, res) => {
     try {
       const { email } = req.query;
+
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+
       const query = { assigned_rider_email: email };
 
       const totalOrders = await ordersCollection.countDocuments(query);
