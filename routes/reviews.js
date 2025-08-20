@@ -8,44 +8,43 @@ module.exports = (
   foodsCollection,
   notificationsCollection
 ) => {
-router.get("/", async (req, res) => {
-  try {
-    const { foodId, page = 1, limit = 3 } = req.query;
+  router.get("/", async (req, res) => {
+    try {
+      const { foodId, page = 1, limit = 3 } = req.query;
 
-    if (!foodId) {
-      return res.status(400).json({ error: "Food Id is required" });
+      if (!foodId) {
+        return res.status(400).json({ error: "Food Id is required" });
+      }
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const limitNum = parseInt(limit);
+
+      // Get paginated reviews
+      const reviews = await reviewsCollection
+        .find({ foodId })
+        .sort({ postedAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .toArray();
+
+      // Get total reviews count
+      const total = await reviewsCollection.countDocuments({ foodId });
+
+      // Calculate average rating using aggregation
+      const aggResult = await reviewsCollection
+        .aggregate([
+          { $match: { foodId } },
+          { $group: { _id: null, avgRating: { $avg: "$rating" } } },
+        ])
+        .toArray();
+
+      const avgRating = aggResult.length > 0 ? aggResult[0].avgRating : 0;
+
+      res.json({ reviews, total, avgRating });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
     }
-
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const limitNum = parseInt(limit);
-
-    // Get paginated reviews
-    const reviews = await reviewsCollection
-      .find({ foodId })
-      .sort({ postedAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .toArray();
-
-    // Get total reviews count
-    const total = await reviewsCollection.countDocuments({ foodId });
-
-    // Calculate average rating using aggregation
-    const aggResult = await reviewsCollection
-      .aggregate([
-        { $match: { foodId } },
-        { $group: { _id: null, avgRating: { $avg: "$rating" } } },
-      ])
-      .toArray();
-
-    const avgRating = aggResult.length > 0 ? aggResult[0].avgRating : 0;
-
-    res.json({ reviews, total, avgRating });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
+  });
 
   router.post("/", verifyJwt, async (req, res) => {
     try {
