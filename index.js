@@ -12,6 +12,8 @@ const statsRoutes = require("./routes/stats");
 const reviewsRoutes = require("./routes/reviews");
 const usersRoutes = require("./routes/users");
 const notificationsRoutes = require("./routes/notifications");
+const dns = require("dns");
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
 const port = 3000;
@@ -20,7 +22,7 @@ app.use(
   cors({
     origin: ["https://sams-kitchen.netlify.app", "http://localhost:5173"],
     credentials: true,
-  })
+  }),
 );
 app.use(express.json());
 app.use(cookieParser());
@@ -44,11 +46,44 @@ async function startServer() {
 
     app.use("/auth", authRoutes(usersCollection));
     app.use("/foods", foodsRoutes(foodsCollection, notificationsCollection));
-    app.use("/orders", ordersRoutes(ordersCollection, ridersCollection, notificationsCollection));
-    app.use("/payments", paymentsRoutes(ordersCollection, paymentsCollection, notificationsCollection));
-    app.use("/riders", ridersRoutes(ridersCollection, usersCollection, ordersCollection, notificationsCollection));
-    app.use("/stats", statsRoutes(usersCollection, ordersCollection, ridersCollection, foodsCollection));
-    app.use("/reviews", reviewsRoutes(reviewsCollection, foodsCollection, notificationsCollection));
+    app.use(
+      "/orders",
+      ordersRoutes(ordersCollection, ridersCollection, notificationsCollection),
+    );
+    app.use(
+      "/payments",
+      paymentsRoutes(
+        ordersCollection,
+        paymentsCollection,
+        notificationsCollection,
+      ),
+    );
+    app.use(
+      "/riders",
+      ridersRoutes(
+        ridersCollection,
+        usersCollection,
+        ordersCollection,
+        notificationsCollection,
+      ),
+    );
+    app.use(
+      "/stats",
+      statsRoutes(
+        usersCollection,
+        ordersCollection,
+        ridersCollection,
+        foodsCollection,
+      ),
+    );
+    app.use(
+      "/reviews",
+      reviewsRoutes(
+        reviewsCollection,
+        foodsCollection,
+        notificationsCollection,
+      ),
+    );
     app.use("/users", usersRoutes(usersCollection));
     app.use("/notifications", notificationsRoutes(notificationsCollection));
 
