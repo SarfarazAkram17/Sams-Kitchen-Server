@@ -1,23 +1,36 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const { ObjectId } = require("mongodb");
-const axios = require("axios");
-const stripe = require("../config/stripe");
-const verifyJwt = require("../middleware/verifyJwt");
+import { ObjectId } from "mongodb";
+import axios from "axios";
+import stripe from "../config/stripe.js";
+import { ADMIN_EMAIL } from "../config/admin.js";
+import verifyJwt from "../middleware/verifyJwt.js";
+import verifyCustomer from "../middleware/verifyCustomer.js";
+import { saveNotification } from "../services/notifications.js";
 
-module.exports = (
+export default (
   ordersCollection,
   paymentsCollection,
-  notificationsCollection
+  notificationsCollection,
 ) => {
-  router.post("/create-ssl-payment", verifyJwt, async (req, res) => {
+  router.post("/create-ssl-payment", verifyJwt, verifyCustomer, async (req, res) => {
     const store_id = process.env.STORE_ID;
     const store_passwd = process.env.STORE_PASSWORD;
 
     const payment = req.body;
+    if (!ObjectId.isValid(String(payment.orderId || ""))) {
+      return res.status(400).send({ message: "Invalid order ID" });
+    }
     const order = await ordersCollection.findOne({
       _id: new ObjectId(payment.orderId),
+      "customer.email": req.user.email,
+      payment_status: { $ne: "paid" },
+      status: "pending",
     });
+    if (!order) {
+      return res.status(404).send({ message: "Payable order not found" });
+    }
+    payment.email = req.user.email;
 
     const tran_id = new ObjectId().toString();
     payment.transactionId = tran_id;
@@ -69,26 +82,46 @@ module.exports = (
     const paymentSuccess = req.body;
     const query = { transactionId: paymentSuccess.tran_id };
     const payment = await paymentsCollection.findOne(query);
+    if (!payment || !ObjectId.isValid(String(payment.orderId || ""))) {
+      return res.status(404).send({ message: "Payment record not found" });
+    }
+    const orderId = new ObjectId(payment.orderId);
+    const order = await ordersCollection.findOne({ _id: orderId });
+    if (!order) {
+      return res.status(404).send({ message: "Order not found" });
+    }
 
     const store_id = process.env.STORE_ID;
     const store_passwd = process.env.STORE_PASSWORD;
 
     const isValidPayment = await axios.get(
-      `https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=${store_id}&store_passwd=${store_passwd}`
+      `https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=${store_id}&store_passwd=${store_passwd}`,
     );
 
     if (isValidPayment?.data?.status === "VALID") {
-      const updatedOrder = {
-        $set: {
-          payment_status: "paid",
-          status: "not_assigned",
-          paidAt: new Date().toISOString(),
-        },
-      };
-      await ordersCollection.updateOne(
-        { _id: new ObjectId(payment.orderId) },
-        updatedOrder
-      );
+      const isFirstSuccessfulPayment = order.payment_status !== "paid";
+      if (isFirstSuccessfulPayment) {
+        const paidAt = new Date().toISOString();
+        const result = await ordersCollection.updateOne(
+          {
+            _id: orderId,
+            payment_status: { $ne: "paid" },
+            status: "pending",
+          },
+          {
+            $set: {
+              payment_status: "paid",
+              status: "confirmed",
+              paidAt,
+            },
+          },
+        );
+        if (!result.modifiedCount) {
+          return res
+            .status(409)
+            .send({ message: "Order is no longer payable" });
+        }
+      }
 
       const updatedPayment = {
         $set: {
@@ -98,29 +131,32 @@ module.exports = (
       };
       await paymentsCollection.updateOne(query, updatedPayment);
 
-      const notificationForUser = {
-        type: "direct",
-        email: payment.email,
-        message: `Your payment is successfully done. Go to my orders and you can download your reciept.`,
-        relatedId: payment.orderId.toString(),
-        createdAt: new Date().toISOString(),
-        isRead: false,
-      };
+      if (isFirstSuccessfulPayment) {
+        const createdAt = new Date().toISOString();
+        await Promise.all([
+          saveNotification(notificationsCollection, {
+            type: "direct",
+            email: payment.email,
+            message:
+              "Your payment is successful. You can view your receipt in My Orders.",
+            relatedId: payment.orderId.toString(),
+            createdAt,
+            isRead: false,
+          }),
+          saveNotification(notificationsCollection, {
+            type: "direct",
+            email: ADMIN_EMAIL,
+            message: "Payment received. The order is confirmed and ready to be prepared.",
+            relatedId: payment.orderId.toString(),
+            createdAt,
+            isRead: false,
+          }),
+        ]);
+      }
 
-      await notificationsCollection.insertOne(notificationForUser);
-
-      const notificationForAdmin = {
-        type: "direct",
-        email: "sarfarazakram16@gmail.com",
-        message: `Get payment successfully.`,
-        relatedId: payment.orderId.toString(),
-        createdAt: new Date().toISOString(),
-        isRead: false,
-      };
-
-      await notificationsCollection.insertOne(notificationForAdmin);
-
-      return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
+      return res.redirect(
+        "https://sams-kitchen.netlify.app/dashboard/myOrders",
+      );
     } else {
       await paymentsCollection.deleteOne(query);
       res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
@@ -142,7 +178,7 @@ module.exports = (
     return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
   });
 
-  router.post("/create-payment-intent", verifyJwt, async (req, res) => {
+  router.post("/create-payment-intent", verifyJwt, verifyCustomer, async (req, res) => {
     try {
       const paymentIntent = await stripe.paymentIntents.create({
         amount: req.body.amountInCents,
@@ -155,19 +191,27 @@ module.exports = (
     }
   });
 
-  router.post("/", verifyJwt, async (req, res) => {
+  router.post("/", verifyJwt, verifyCustomer, async (req, res) => {
     try {
-      const { orderId, email, amount, paymentMethod, transactionId } = req.body;
+      const { orderId, amount, paymentMethod, transactionId } = req.body;
+      if (!ObjectId.isValid(String(orderId || ""))) {
+        return res.status(400).send({ message: "Invalid order ID" });
+      }
 
       const updateResult = await ordersCollection.updateOne(
-        { _id: new ObjectId(orderId) },
+        {
+          _id: new ObjectId(orderId),
+          "customer.email": req.user.email,
+          payment_status: { $ne: "paid" },
+          status: "pending",
+        },
         {
           $set: {
             payment_status: "paid",
-            status: "not_assigned",
+            status: "confirmed",
             paidAt: new Date().toISOString(),
           },
-        }
+        },
       );
 
       if (updateResult.modifiedCount === 0) {
@@ -178,7 +222,7 @@ module.exports = (
 
       const paymentDoc = {
         orderId,
-        email,
+        email: req.user.email,
         amount,
         paymentMethod,
         transactionId,
@@ -190,25 +234,25 @@ module.exports = (
 
       const notificationForUser = {
         type: "direct",
-        email,
+        email: req.user.email,
         message: `Your payment is successfully done. Go to my orders and you can download your reciept.`,
         relatedId: orderId.toString(),
         createdAt: new Date().toISOString(),
         isRead: false,
       };
 
-      await notificationsCollection.insertOne(notificationForUser);
+      await saveNotification(notificationsCollection, notificationForUser);
 
       const notificationForAdmin = {
         type: "direct",
-        email: "sarfarazakram16@gmail.com",
-        message: `Get payment successfully.`,
+        email: ADMIN_EMAIL,
+        message: `Payment received. The order is confirmed and ready to be prepared.`,
         relatedId: orderId.toString(),
         createdAt: new Date().toISOString(),
         isRead: false,
       };
 
-      await notificationsCollection.insertOne(notificationForAdmin);
+      await saveNotification(notificationsCollection, notificationForAdmin);
 
       res.status(201).send({
         message: "Payment recorded and parcel marked as paid",

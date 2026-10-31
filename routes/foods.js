@@ -1,10 +1,11 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const { ObjectId } = require("mongodb");
-const verifyJwt = require("../middleware/verifyJwt");
-const verifyAdmin = require("../middleware/verifyAdmin");
+import { ObjectId } from "mongodb";
+import verifyJwt from "../middleware/verifyJwt.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
+import { saveNotification } from "../services/notifications.js";
 
-module.exports = (foodsCollection, notificationsCollection) => {
+export default (foodsCollection, notificationsCollection) => {
   router.get("/", async (req, res) => {
     try {
       let { page = 1, limit = 12 } = req.query;
@@ -163,7 +164,7 @@ module.exports = (foodsCollection, notificationsCollection) => {
         readBy: [],
       };
 
-      await notificationsCollection.insertOne(notification);
+      await saveNotification(notificationsCollection, notification);
 
       res.status(201).json({
         message: "Food added successfully",
@@ -226,7 +227,7 @@ module.exports = (foodsCollection, notificationsCollection) => {
           readBy: [],
         };
 
-        await notificationsCollection.insertOne(notification);
+        await saveNotification(notificationsCollection, notification);
       }
 
       res.send(result);

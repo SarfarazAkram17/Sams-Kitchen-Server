@@ -5,4 +5,4 @@ const verifyAdmin = (req, res, next) => {
   next();
 };
 
-module.exports = verifyAdmin;
+export default verifyAdmin;

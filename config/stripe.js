@@ -1,4 +1,6 @@
-require("dotenv").config();
-const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
+import "dotenv/config";
+import Stripe from "stripe";
 
-module.exports = stripe;
+const stripe = new Stripe(process.env.PAYMENT_GATEWAY_KEY);
+
+export default stripe;

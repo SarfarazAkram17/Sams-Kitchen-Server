@@ -1,9 +1,10 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const verifyJwt = require("../middleware/verifyJwt");
-const { ObjectId } = require("mongodb");
+import verifyJwt from "../middleware/verifyJwt.js";
+import { ObjectId } from "mongodb";
+import { saveNotification } from "../services/notifications.js";
 
-module.exports = (
+export default (
   reviewsCollection,
   foodsCollection,
   notificationsCollection
@@ -80,7 +81,7 @@ module.exports = (
         isRead: false,
       };
 
-      await notificationsCollection.insertOne(notificationForUser);
+      await saveNotification(notificationsCollection, notificationForUser);
 
       res.status(201).json({
         success: true,

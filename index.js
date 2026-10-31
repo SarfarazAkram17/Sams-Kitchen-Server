@@ -1,26 +1,27 @@
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
-const { connectDB } = require("./config/db");
-const authRoutes = require("./routes/auth");
-const foodsRoutes = require("./routes/foods");
-const ordersRoutes = require("./routes/orders");
-const paymentsRoutes = require("./routes/payments");
-const ridersRoutes = require("./routes/riders");
-const statsRoutes = require("./routes/stats");
-const reviewsRoutes = require("./routes/reviews");
-const usersRoutes = require("./routes/users");
-const notificationsRoutes = require("./routes/notifications");
-const dns = require("dns");
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import { connectDB } from "./config/db.js";
+import authRoutes from "./routes/auth.js";
+import foodsRoutes from "./routes/foods.js";
+import ordersRoutes from "./routes/orders.js";
+import paymentsRoutes from "./routes/payments.js";
+import ridersRoutes from "./routes/riders.js";
+import statsRoutes from "./routes/stats.js";
+import reviewsRoutes from "./routes/reviews.js";
+import usersRoutes from "./routes/users.js";
+import cashoutsRoutes from "./routes/cashouts.js";
+import notificationsRoutes from "./routes/notifications.js";
+import dns from "dns";
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
-const port = 3000;
+const port = Number(process.env.PORT) || 3000;
 
 app.use(
   cors({
-    origin: ["https://sams-kitchen.netlify.app", "http://localhost:5173"],
+    origin: [process.env.CLIENT_ORIGIN, "http://localhost:5173"],
     credentials: true,
   }),
 );
@@ -42,13 +43,20 @@ async function startServer() {
       ridersCollection,
       reviewsCollection,
       notificationsCollection,
+      cashoutsCollection,
+      deliveryOtpChallengesCollection,
     } = await connectDB();
 
     app.use("/auth", authRoutes(usersCollection));
     app.use("/foods", foodsRoutes(foodsCollection, notificationsCollection));
     app.use(
       "/orders",
-      ordersRoutes(ordersCollection, ridersCollection, notificationsCollection),
+      ordersRoutes(
+        ordersCollection,
+        ridersCollection,
+        notificationsCollection,
+        deliveryOtpChallengesCollection,
+      ),
     );
     app.use(
       "/payments",
@@ -81,6 +89,14 @@ async function startServer() {
       reviewsRoutes(
         reviewsCollection,
         foodsCollection,
+        notificationsCollection,
+      ),
+    );
+    app.use(
+      "/cashouts",
+      cashoutsRoutes(
+        cashoutsCollection,
+        ordersCollection,
         notificationsCollection,
       ),
     );

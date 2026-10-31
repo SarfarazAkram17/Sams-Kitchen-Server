@@ -1,8 +1,8 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const jwt = require("jsonwebtoken");
+import jwt from "jsonwebtoken";
 
-module.exports = (usersCollection) => {
+export default (usersCollection) => {
   router.post("/jwt", async (req, res) => {
     const { email } = req.body;
     const user = await usersCollection.findOne({ email });

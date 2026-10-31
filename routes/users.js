@@ -1,9 +1,9 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const verifyJwt = require("../middleware/verifyJwt");
-const verifyAdmin = require("../middleware/verifyAdmin");
+import verifyJwt from "../middleware/verifyJwt.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 
-module.exports = (usersCollection) => {
+export default (usersCollection) => {
   router.get("/", verifyJwt, verifyAdmin, async (req, res) => {
     try {
       let { page = 1, limit = 10, search = "", searchType = "name", role = "" } = req.query;

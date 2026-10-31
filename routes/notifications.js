@@ -1,17 +1,18 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const verifyJwt = require("../middleware/verifyJwt");
+import verifyJwt from "../middleware/verifyJwt.js";
+import { attachNotificationStream } from "../services/notifications.js";
 
-module.exports = (notificationsCollection) => {
-  router.get("/", async (req, res) => {
+export default (notificationsCollection) => {
+  router.get("/stream", verifyJwt, (req, res) => {
+    attachNotificationStream(req.user.email, res);
+  });
+
+  router.get("/", verifyJwt, async (req, res) => {
     try {
-      const { email, page = 1, limit = 7 } = req.query;
-      if (!email) {
-        return res.status(400).json({ message: "Email is required" });
-      }
-
-      const pageNum = parseInt(page);
-      const pageLimit = parseInt(limit);
+      const email = req.user.email;
+      const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+      const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 7));
 
       // Direct notifications
       const direct = await notificationsCollection
@@ -39,8 +40,8 @@ module.exports = (notificationsCollection) => {
       );
 
       // Pagination
-      const start = (pageNum - 1) * pageLimit;
-      const paginated = sorted.slice(start, start + pageLimit);
+      const start = (page - 1) * limit;
+      const paginated = sorted.slice(start, start + limit);
 
       res.send({
         notifications: paginated,
@@ -53,11 +54,7 @@ module.exports = (notificationsCollection) => {
 
   router.patch("/readAll", verifyJwt, async (req, res) => {
     try {
-      const { email } = req.query;
-
-      if (!email) {
-        return res.status(400).json({ message: "Email is required" });
-      }
+      const email = req.user.email;
 
       // Direct notifications
       const direct = await notificationsCollection.updateMany(

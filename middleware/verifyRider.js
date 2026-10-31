@@ -5,4 +5,4 @@ const verifyRider = (req, res, next) => {
   next();
 };
 
-module.exports = verifyRider;
+export default verifyRider;
