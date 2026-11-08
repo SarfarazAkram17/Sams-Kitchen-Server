@@ -3,13 +3,38 @@ const router = express.Router();
 import { ObjectId } from "mongodb";
 import { createHmac, randomInt, timingSafeEqual } from "crypto";
 import verifyJwt from "../middleware/verifyJwt.js";
+import {
+  verifyAdmin,
+  verifyCustomer,
+  verifyRider,
+} from "../middleware/verifyRole.js";
 import { ADMIN_EMAIL } from "../config/admin.js";
-import verifyAdmin from "../middleware/verifyAdmin.js";
-import verifyCustomer from "../middleware/verifyCustomer.js";
-import verifyRider from "../middleware/verifyRider.js";
 import { client } from "../config/db.js";
 import { saveNotification } from "../services/notifications.js";
 import { sendDeliveryOtpEmail } from "../services/deliveryOtpEmail.js";
+import {
+  orderSearchClause,
+  pageParams,
+  withClauses,
+} from "../utils/queryHelpers.js";
+
+const ORDER_STATUSES = [
+  "pending",
+  "confirmed",
+  "prepared",
+  "assigned",
+  "picked",
+  "delivered",
+  "cancelled",
+];
+
+// "2026-11-08" and a time of day, read in Bangladesh time (UTC+6), as the ISO
+// string that placedAt is stored in. Anything that is not a real date gives null.
+const dayBound = (day, time) => {
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const date = new Date(`${day}T${time}+06:00`);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
 
 export default (
   ordersCollection,
@@ -24,7 +49,7 @@ export default (
 
   router.get("/", verifyJwt, async (req, res) => {
     try {
-      const { payment_status, status } = req.query;
+      const { payment_status, status, search, sort } = req.query;
       let { page = 1, limit = 12 } = req.query;
 
       page = parseInt(page);
@@ -36,12 +61,19 @@ export default (
       if (status) ordersQuery.status = status;
 
       const skip = (page - 1) * limit;
+      const listQuery = withClauses(ordersQuery, orderSearchClause(search));
+      const sorts = {
+        newest: { placedAt: -1 },
+        oldest: { placedAt: 1 },
+        highest: { total: -1 },
+        lowest: { total: 1 },
+      };
 
       const [total, orders, statusCountRows] = await Promise.all([
-        ordersCollection.countDocuments(ordersQuery),
+        ordersCollection.countDocuments(listQuery),
         ordersCollection
-          .find(ordersQuery)
-          .sort({ placedAt: -1 })
+          .find(listQuery)
+          .sort(sorts[sort] || sorts.newest)
           .skip(skip)
           .limit(limit)
           .toArray(),
@@ -56,11 +88,11 @@ export default (
       const statusCounts = Object.fromEntries(
         statusCountRows
           .filter(({ _id }) => typeof _id === "string")
-          .map(({ _id, count }) => [_id, count])
+          .map(({ _id, count }) => [_id, count]),
       );
       const allTimeTotal = statusCountRows.reduce(
         (count, statusRow) => count + statusRow.count,
-        0
+        0,
       );
 
       res.send({ orders, total, allTimeTotal, statusCounts });
@@ -71,31 +103,119 @@ export default (
     }
   });
 
+  // Paid orders for the admin's Kitchen Orders page. `status` is "confirmed"
+  // (to prepare, oldest first) or "prepared" (waiting for a rider, latest first).
   router.get("/kitchen", verifyJwt, verifyAdmin, async (req, res) => {
     try {
       const status = req.query.status === "prepared" ? "prepared" : "confirmed";
-      const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-      const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
-      const sort = status === "confirmed" ? { paidAt: 1 } : { preparedAt: -1 };
+      const { page, limit } = pageParams(req.query);
+      const sortField = status === "prepared" ? "preparedAt" : "paidAt";
+      const direction =
+        req.query.sort === "oldest"
+          ? 1
+          : req.query.sort === "newest"
+            ? -1
+            : status === "confirmed"
+              ? 1
+              : -1;
+      const baseQuery = { status, payment_status: "paid" };
+      const listQuery = withClauses(
+        baseQuery,
+        orderSearchClause(req.query.search),
+      );
 
-      const [orders, confirmedCount, preparedCount] = await Promise.all([
-        ordersCollection
-          .find({ status, payment_status: "paid" })
-          .sort(sort)
-          .skip((page - 1) * limit)
-          .limit(limit)
-          .toArray(),
-        ordersCollection.countDocuments({ status: "confirmed", payment_status: "paid" }),
-        ordersCollection.countDocuments({ status: "prepared", payment_status: "paid" }),
-      ]);
+      const [orders, confirmedCount, preparedCount, matched] =
+        await Promise.all([
+          ordersCollection
+            .find(listQuery)
+            .sort({ [sortField]: direction, _id: direction })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .toArray(),
+          ordersCollection.countDocuments({
+            status: "confirmed",
+            payment_status: "paid",
+          }),
+          ordersCollection.countDocuments({
+            status: "prepared",
+            payment_status: "paid",
+          }),
+          ordersCollection.countDocuments(listQuery),
+        ]);
 
       res.send({
         orders,
-        total: status === "confirmed" ? confirmedCount : preparedCount,
+        total: matched,
         counts: { confirmed: confirmedCount, prepared: preparedCount },
       });
     } catch (err) {
       res.status(500).send({ message: "Failed to load kitchen orders" });
+    }
+  });
+
+  // Every order in the system, for the admin's All Orders page. Filters:
+  // status, payment_status ("paid" | "unpaid"), from / to (YYYY-MM-DD, read as
+  // Bangladesh days), search and sort. Counts and revenue help the page header.
+  router.get("/all", verifyJwt, verifyAdmin, async (req, res) => {
+    try {
+      const { page, limit } = pageParams(req.query);
+      const { status, payment_status: payment, from, to, sort } = req.query;
+
+      const base = {};
+      if (ORDER_STATUSES.includes(status)) base.status = status;
+      if (payment === "paid") base.payment_status = "paid";
+      if (payment === "unpaid") base.payment_status = { $ne: "paid" };
+
+      const placed = {};
+      const start = dayBound(from, "00:00:00.000");
+      const end = dayBound(to, "23:59:59.999");
+      if (start) placed.$gte = start;
+      if (end) placed.$lte = end;
+      if (start || end) base.placedAt = placed;
+
+      const listQuery = withClauses(base, orderSearchClause(req.query.search));
+      const sorts = {
+        newest: { placedAt: -1, _id: -1 },
+        oldest: { placedAt: 1, _id: 1 },
+        highest: { total: -1, _id: -1 },
+        lowest: { total: 1, _id: 1 },
+      };
+
+      const [orders, total, statusRows, revenueRows] = await Promise.all([
+        ordersCollection
+          .find(listQuery)
+          .sort(sorts[sort] || sorts.newest)
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .toArray(),
+        ordersCollection.countDocuments(listQuery),
+        ordersCollection
+          .aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])
+          .toArray(),
+        ordersCollection
+          .aggregate([
+            { $match: withClauses(listQuery, { payment_status: "paid" }) },
+            { $group: { _id: null, revenue: { $sum: "$total" } } },
+          ])
+          .toArray(),
+      ]);
+
+      const statusCounts = Object.fromEntries(
+        statusRows
+          .filter(({ _id }) => typeof _id === "string")
+          .map(({ _id, count }) => [_id, count]),
+      );
+      const allTimeTotal = statusRows.reduce((sum, row) => sum + row.count, 0);
+
+      res.send({
+        orders,
+        total,
+        statusCounts,
+        allTimeTotal,
+        revenue: revenueRows[0]?.revenue || 0,
+      });
+    } catch (err) {
+      res.status(500).send({ message: "Failed to load orders" });
     }
   });
 
@@ -107,12 +227,18 @@ export default (
 
     try {
       const order = await ordersCollection.findOneAndUpdate(
-        { _id: new ObjectId(orderId), status: "confirmed", payment_status: "paid" },
+        {
+          _id: new ObjectId(orderId),
+          status: "confirmed",
+          payment_status: "paid",
+        },
         { $set: { status: "prepared", preparedAt: new Date().toISOString() } },
         { returnDocument: "after" },
       );
       if (!order) {
-        return res.status(409).send({ message: "This order is not waiting to be prepared" });
+        return res
+          .status(409)
+          .send({ message: "This order is not waiting to be prepared" });
       }
 
       const thana = order.customer?.address?.thana;
@@ -126,7 +252,8 @@ export default (
         saveNotification(notificationsCollection, {
           type: "direct",
           email: order.customer.email,
-          message: "Your food is prepared. We are waiting for a rider to pick it up.",
+          message:
+            "Your food is prepared. We are waiting for a rider to pick it up.",
           relatedId: orderId,
           createdAt,
           isRead: false,
@@ -187,6 +314,17 @@ export default (
         return res.status(400).send({ message: "Invalid order data" });
       }
 
+      const whole = (value) => Math.round(Number(value) || 0);
+      orderData.items = orderData.items.map((item) => ({
+        ...item,
+        price: whole(item.price),
+        subtotal: whole(item.subtotal),
+      }));
+      orderData.subtotal = whole(orderData.subtotal);
+      orderData.discount = whole(orderData.discount);
+      orderData.deliveryCharge = whole(orderData.deliveryCharge);
+      orderData.total = whole(orderData.total);
+
       const result = await ordersCollection.insertOne(orderData);
 
       const notificationForUser = {
@@ -225,7 +363,9 @@ export default (
       const { status } = req.body;
 
       if (status !== "cancelled") {
-        return res.status(400).send({ message: "Only order cancellation is supported here" });
+        return res
+          .status(400)
+          .send({ message: "Only order cancellation is supported here" });
       }
 
       if (!ObjectId.isValid(id)) {
@@ -243,7 +383,9 @@ export default (
       const result = await ordersCollection.updateOne(filter, updateDoc);
 
       if (result.matchedCount === 0) {
-        return res.status(409).send({ message: "This order cannot be cancelled" });
+        return res
+          .status(409)
+          .send({ message: "This order cannot be cancelled" });
       }
 
       const notificationForUser = {
@@ -299,7 +441,7 @@ export default (
             is_available: { $ne: false },
           },
           { $set: { work_status: "in_delivery" } },
-          { session, returnDocument: "after" }
+          { session, returnDocument: "after" },
         );
         if (!acceptedRider) {
           const error = new Error("RIDER_UNAVAILABLE");
@@ -322,7 +464,7 @@ export default (
               assignedAt: new Date().toISOString(),
             },
           },
-          { session, returnDocument: "after" }
+          { session, returnDocument: "after" },
         );
         if (!acceptedOrder) {
           const error = new Error("OFFER_UNAVAILABLE");
@@ -331,7 +473,9 @@ export default (
       });
 
       if (!acceptedOrder || !acceptedRider) {
-        return res.status(409).send({ message: "This delivery offer is no longer available" });
+        return res
+          .status(409)
+          .send({ message: "This delivery offer is no longer available" });
       }
 
       const createdAt = new Date().toISOString();
@@ -364,10 +508,14 @@ export default (
       res.send({ message: "Delivery accepted", order: acceptedOrder });
     } catch (err) {
       if (err.message === "RIDER_UNAVAILABLE") {
-        return res.status(409).send({ message: "You are unavailable or already delivering" });
+        return res
+          .status(409)
+          .send({ message: "You are unavailable or already delivering" });
       }
       if (err.message === "OFFER_UNAVAILABLE") {
-        return res.status(409).send({ message: "This delivery offer was already accepted" });
+        return res
+          .status(409)
+          .send({ message: "This delivery offer was already accepted" });
       }
       res.status(500).send({ message: err.message });
     } finally {
@@ -525,9 +673,12 @@ export default (
         _id: new ObjectId(orderId),
         assigned_rider_email: req.user.email,
       });
-      if (!order) return res.status(404).send({ message: "Assigned order not found" });
+      if (!order)
+        return res.status(404).send({ message: "Assigned order not found" });
       if (allowedTransitions[order.status] !== status) {
-        return res.status(409).send({ message: "This delivery status cannot be updated" });
+        return res
+          .status(409)
+          .send({ message: "This delivery status cannot be updated" });
       }
 
       const challengeId = statusOtpId(orderId, status);
@@ -572,10 +723,7 @@ export default (
         timingSafeEqual(submittedHash, expectedHash);
 
       if (!codeIsValid) {
-        const attemptsRemaining = Math.max(
-          0,
-          5 - challengeAttempt.attempts,
-        );
+        const attemptsRemaining = Math.max(0, 5 - challengeAttempt.attempts);
         if (!attemptsRemaining) {
           await deliveryOtpChallengesCollection.deleteOne({
             _id: challengeId,
@@ -590,15 +738,21 @@ export default (
       }
 
       const result = await ordersCollection.updateOne(
-        { _id: new ObjectId(orderId), status: order.status, assigned_rider_email: req.user.email },
-        { $set: updatedDoc }
+        {
+          _id: new ObjectId(orderId),
+          status: order.status,
+          assigned_rider_email: req.user.email,
+        },
+        { $set: updatedDoc },
       );
       if (!result.modifiedCount) {
         await deliveryOtpChallengesCollection.deleteOne({
           _id: challengeId,
           riderEmail: req.user.email,
         });
-        return res.status(409).send({ message: "This delivery status changed already" });
+        return res
+          .status(409)
+          .send({ message: "This delivery status changed already" });
       }
       await deliveryOtpChallengesCollection.deleteOne({
         _id: challengeId,
@@ -645,7 +799,8 @@ export default (
         const rider = await ridersCollection.findOne(query);
         await ridersCollection.updateOne(query, {
           $set: {
-            work_status: rider?.is_available === false ? "unavailable" : "available",
+            work_status:
+              rider?.is_available === false ? "unavailable" : "available",
           },
         });
 

@@ -5,7 +5,7 @@ import axios from "axios";
 import stripe from "../config/stripe.js";
 import { ADMIN_EMAIL } from "../config/admin.js";
 import verifyJwt from "../middleware/verifyJwt.js";
-import verifyCustomer from "../middleware/verifyCustomer.js";
+import { verifyCustomer } from "../middleware/verifyRole.js";
 import { saveNotification } from "../services/notifications.js";
 
 export default (
@@ -38,7 +38,7 @@ export default (
     const initiate = {
       store_id,
       store_passwd,
-      total_amount: order.total,
+      total_amount: Math.round(order.total),
       currency: "BDT",
       tran_id,
       success_url: "https://sams-kitchen.vercel.app/payments/success-payment",
@@ -181,13 +181,14 @@ export default (
   router.post("/create-payment-intent", verifyJwt, verifyCustomer, async (req, res) => {
     try {
       const paymentIntent = await stripe.paymentIntents.create({
-        amount: req.body.amountInCents,
+        amount: Math.round(Number(req.body.amountInCents) || 0),
         currency: "bdt",
         payment_method_types: ["card"],
       });
       res.json({ clientSecret: paymentIntent.client_secret });
     } catch (error) {
       res.status(500).json({ error: error.message });
+      console.log(error)
     }
   });
 
@@ -223,7 +224,7 @@ export default (
       const paymentDoc = {
         orderId,
         email: req.user.email,
-        amount,
+        amount: Math.round(Number(amount) || 0),
         paymentMethod,
         transactionId,
         paidAt: new Date().toISOString(),

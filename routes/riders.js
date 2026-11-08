@@ -3,35 +3,51 @@ const router = express.Router();
 import { ObjectId } from "mongodb";
 import { ADMIN_EMAIL } from "../config/admin.js";
 import verifyJwt from "../middleware/verifyJwt.js";
-import verifyAdmin from "../middleware/verifyAdmin.js";
-import verifyCustomer from "../middleware/verifyCustomer.js";
-import verifyRider from "../middleware/verifyRider.js";
+import { verifyAdmin, verifyRider } from "../middleware/verifyRole.js";
 import { saveNotification } from "../services/notifications.js";
+import { escapeRegex, orderSearchClause, pageParams, searchTerm, withClauses } from "../utils/queryHelpers.js";
+import { parseRiderProfile, text } from "../utils/riderProfile.js";
 
 export default (
   ridersCollection,
   usersCollection,
   ordersCollection,
-  notificationsCollection
+  notificationsCollection,
+  rolesCollection
 ) => {
   router.get("/pending", verifyJwt, verifyAdmin, async (req, res) => {
     try {
-      let { page = 1, limit = 10 } = req.query;
+      const { page, limit } = pageParams(req.query);
+      const term = searchTerm(req.query.search);
+      const status = req.query.status === "rejected" ? "rejected" : "pending";
+      const query = { status };
+      if (term) {
+        const pattern = new RegExp(escapeRegex(term), "i");
+        query.$or = [
+          { name: pattern },
+          { email: pattern },
+          { phone: pattern },
+          { thana: pattern },
+          { district: pattern },
+        ];
+      }
+      if (req.query.region) query.region = String(req.query.region);
+      if (req.query.district) query.district = String(req.query.district);
 
-      page = parseInt(page);
-      limit = parseInt(limit);
-
-      const skip = (page - 1) * limit;
-      const total = await ridersCollection.countDocuments({
-        status: "pending",
-      });
-
-      const pendingRiders = await ridersCollection
-        .find({ status: "pending" })
-        .skip(skip)
-        .limit(limit)
-        .toArray();
-      res.send({ pendingRiders, total });
+      const dateField = status === "rejected" ? "rejectedAt" : "appliedAt";
+      const sorts = { newest: { [dateField]: -1 }, oldest: { [dateField]: 1 }, name: { name: 1 } };
+      const [pendingRiders, total, allPending, allRejected] = await Promise.all([
+        ridersCollection
+          .find(query)
+          .sort(sorts[req.query.sort] || sorts.newest)
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .toArray(),
+        ridersCollection.countDocuments(query),
+        ridersCollection.countDocuments({ status: "pending" }),
+        ridersCollection.countDocuments({ status: "rejected" }),
+      ]);
+      res.send({ pendingRiders, total, allPending, allRejected });
     } catch (error) {
       res.status(500).send({ message: "Failed to load pending riders" });
     }
@@ -41,7 +57,12 @@ export default (
     try {
       const rider = await ridersCollection.findOne(
         { email: req.user.email },
-        { projection: { name: 1, email: 1, phone: 1, region: 1, district: 1, thana: 1, status: 1, work_status: 1, is_available: 1 } }
+        {
+          projection: {
+            name: 1, email: 1, phone: 1, age: 1, experience: 1, region: 1, district: 1, thana: 1,
+            status: 1, work_status: 1, is_available: 1, rejectionReason: 1, rejectedAt: 1, appliedAt: 1,
+          },
+        }
       );
       if (!rider) return res.status(404).send({ message: "Rider profile not found" });
       res.send(rider);
@@ -64,15 +85,18 @@ export default (
       const { page = 1, limit = 10 } = req.query;
       const pageNumber = Math.max(1, Number.parseInt(page, 10) || 1);
       const pageLimit = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 10));
-      const query = {
-        payment_status: "paid",
-        status: "prepared",
-        "customer.address.thana": rider.thana,
-      };
+      const query = withClauses(
+        {
+          payment_status: "paid",
+          status: "prepared",
+          "customer.address.thana": rider.thana,
+        },
+        orderSearchClause(req.query.search),
+      );
       const [offers, total] = await Promise.all([
         ordersCollection
           .find(query)
-          .sort({ placedAt: 1 })
+          .sort({ placedAt: req.query.sort === "newest" ? -1 : 1 })
           .skip((pageNumber - 1) * pageLimit)
           .limit(pageLimit)
           .toArray(),
@@ -124,10 +148,13 @@ export default (
       }
 
       const skip = (page - 1) * limit;
-      const query = {
-        assigned_rider_email: email,
-        status: { $in: ["assigned", "picked"] },
-      };
+      const query = withClauses(
+        {
+          assigned_rider_email: email,
+          status: { $in: ["assigned", "picked"] },
+        },
+        orderSearchClause(req.query.search),
+      );
 
       const total = await ordersCollection.countDocuments(query);
       const orders = await ordersCollection
@@ -155,12 +182,20 @@ export default (
       }
 
       const skip = (page - 1) * limit;
-      const query = { assigned_rider_email: email, status: "delivered" };
+      const query = withClauses(
+        { assigned_rider_email: email, status: "delivered" },
+        orderSearchClause(req.query.search),
+      );
+      const sorts = {
+        newest: { deliveredAt: -1 },
+        oldest: { deliveredAt: 1 },
+        highest: { total: -1 },
+      };
 
       const total = await ordersCollection.countDocuments(query);
       const orders = await ordersCollection
         .find(query)
-        .sort({ deliveredAt: -1 })
+        .sort(sorts[req.query.sort] || sorts.newest)
         .skip(skip)
         .limit(limit)
         .toArray();
@@ -171,65 +206,40 @@ export default (
     }
   });
 
-  router.post("/", verifyJwt, verifyCustomer, async (req, res) => {
-    try {
-      const { email } = req.body;
-      const exists = await ridersCollection.findOne({ email });
-      if (exists) {
-        return res.send({ message: "You have already applied." });
-      }
-
-      const newCandidate = req.body;
-      const result = await ridersCollection.insertOne(newCandidate);
-
-      const notificationForUser = {
-        type: "direct",
-        email: email,
-        message: `You apply for become a rider of Sam's Kitchen.`,
-        relatedId: result.insertedId.toString(),
-        createdAt: new Date().toISOString(),
-        isRead: false,
-      };
-
-      await saveNotification(notificationsCollection, notificationForUser);
-
-      const notificationForAdmin = {
-        type: "direct",
-        email: ADMIN_EMAIL,
-        message: `${newCandidate.name} apply to become a rider.`,
-        relatedId: result.insertedId.toString(),
-        createdAt: new Date().toISOString(),
-        isRead: false,
-      };
-
-      await saveNotification(notificationsCollection, notificationForAdmin);
-
-      res.send(result);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
   router.patch("/:id/status", verifyJwt, verifyAdmin, async (req, res) => {
     const { id } = req.params;
-    const { status = "active", email } = req.body;
-    const query = { _id: new ObjectId(id) };
+    const { email } = req.body;
+    const query = { _id: new ObjectId(id), status: { $in: ["pending", "rejected"] } };
 
     const updatedDoc = {
       $set: {
-        status,
+        status: "active",
         work_status: "available",
         is_available: true,
         activeAt: new Date().toISOString(),
       },
+      $unset: { rejectionReason: "", rejectedAt: "" },
     };
 
     try {
       const result = await ridersCollection.updateOne(query, updatedDoc);
-      const userQuery = { email };
-      const user = await usersCollection.findOne(userQuery);
-      const updatedUserDoc = { $set: { role: "rider" } };
-      await usersCollection.updateOne(userQuery, updatedUserDoc);
+      if (!result.matchedCount) {
+        return res.status(404).send({ message: "Application not found or already approved" });
+      }
+      const user = await usersCollection.findOne({ email });
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
+
+      // Rider accounts chose their role at onboarding; this also covers
+      // applications that were filed before onboarding existed.
+      const riderRole = await rolesCollection.findOne({ requiresApproval: true });
+      if (riderRole) {
+        await usersCollection.updateOne(
+          { email, role: { $ne: "admin" } },
+          { $set: { role: riderRole.key } }
+        );
+      }
 
       const notificationForUser = {
         type: "direct",
@@ -259,37 +269,106 @@ export default (
     }
   });
 
-  router.delete("/:id", verifyJwt, verifyAdmin, async (req, res) => {
+  // The admin turns an application down. The account keeps its rider role and
+  // the rider can read the reason and apply again.
+  router.patch("/:id/reject", verifyJwt, verifyAdmin, async (req, res) => {
     try {
-      const query = { _id: new ObjectId(req.params.id) };
-      const rider = await ridersCollection.findOne(query);
+      const reason = text(req.body?.reason).slice(0, 300);
+      const rejectedAt = new Date().toISOString();
+      const rider = await ridersCollection.findOneAndUpdate(
+        { _id: new ObjectId(req.params.id), status: "pending" },
+        { $set: { status: "rejected", rejectedAt, rejectionReason: reason } },
+        { returnDocument: "after" }
+      );
+      if (!rider) {
+        return res.status(404).send({ message: "Application not found or already reviewed" });
+      }
 
-      const notificationForUser = {
+      await saveNotification(notificationsCollection, {
         type: "direct",
         email: rider.email,
-        message: `You are rejected from become a rider of Sam's Kitchen.`,
+        message: reason
+          ? `Your rider application was not approved. Reason: ${reason}. You can update your details and apply again.`
+          : "Your rider application was not approved. You can update your details and apply again.",
         relatedId: rider._id.toString(),
-        createdAt: new Date().toISOString(),
+        createdAt: rejectedAt,
         isRead: false,
-      };
-
-      await saveNotification(notificationsCollection, notificationForUser);
-
-      const notificationForAdmin = {
+      });
+      await saveNotification(notificationsCollection, {
         type: "direct",
         email: ADMIN_EMAIL,
-        message: `You rejected a rider application. Now ${rider.name} is rejected from become a rider of Sam's Kitchen.`,
+        message: `You rejected ${rider.name}'s rider application.`,
         relatedId: rider._id.toString(),
-        createdAt: new Date().toISOString(),
+        createdAt: rejectedAt,
         isRead: false,
-      };
+      });
 
-      await saveNotification(notificationsCollection, notificationForAdmin);
-
-      const result = await ridersCollection.deleteOne(query);
-      res.send(result);
+      res.send({ success: true });
     } catch (err) {
-      res.status(500).send({ message: "Failed to update rider status" });
+      res.status(500).send({ message: "Failed to reject the application" });
+    }
+  });
+
+  // A rejected rider updates their details and goes back into the review queue.
+  router.post("/reapply", verifyJwt, verifyRider, async (req, res) => {
+    try {
+      const { profile, error } = parseRiderProfile(req.body);
+      if (error) return res.status(400).send({ message: error });
+
+      const appliedAt = new Date().toISOString();
+      const rider = await ridersCollection.findOneAndUpdate(
+        { email: req.user.email, status: "rejected" },
+        {
+          $set: { ...profile, status: "pending", appliedAt, resubmittedAt: appliedAt },
+          $unset: { rejectionReason: "", rejectedAt: "" },
+        },
+        { returnDocument: "after" }
+      );
+      if (!rider) {
+        return res.status(409).send({ message: "There is no rejected application to resubmit." });
+      }
+
+      await saveNotification(notificationsCollection, {
+        type: "direct",
+        email: rider.email,
+        message: "Your rider application was sent again and is waiting for review.",
+        relatedId: rider._id.toString(),
+        createdAt: appliedAt,
+        isRead: false,
+      });
+      await saveNotification(notificationsCollection, {
+        type: "direct",
+        email: ADMIN_EMAIL,
+        message: `${rider.name} updated their details and applied again to become a rider.`,
+        relatedId: rider._id.toString(),
+        createdAt: appliedAt,
+        isRead: false,
+      });
+
+      res.send({ success: true });
+    } catch (err) {
+      res.status(500).send({ message: "Failed to send the application again" });
+    }
+  });
+
+  // A rider whose application is pending or rejected can drop it and go back to the default role.
+  router.post("/withdraw", verifyJwt, verifyRider, async (req, res) => {
+    try {
+      const rider = await ridersCollection.findOne({ email: req.user.email });
+      if (!rider || rider.status === "active") {
+        return res.status(409).send({ message: "Only an application under review or rejected can be withdrawn." });
+      }
+
+      const defaultRole = await rolesCollection.findOne({ isDefault: true });
+      if (!defaultRole) {
+        return res.status(500).send({ message: "No default role is set." });
+      }
+
+      await ridersCollection.deleteOne({ _id: rider._id });
+      await usersCollection.updateOne({ email: req.user.email }, { $set: { role: defaultRole.key } });
+      res.send({ success: true, role: defaultRole.key });
+    } catch (err) {
+      res.status(500).send({ message: "Failed to withdraw the application" });
     }
   });
 

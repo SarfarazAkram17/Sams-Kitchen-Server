@@ -2,26 +2,86 @@ import express from "express";
 const router = express.Router();
 import { ObjectId } from "mongodb";
 import verifyJwt from "../middleware/verifyJwt.js";
-import verifyAdmin from "../middleware/verifyAdmin.js";
+import { verifyAdmin } from "../middleware/verifyRole.js";
 import { saveNotification } from "../services/notifications.js";
+
+const whole = (value) => Math.round(Number(value) || 0);
+const numberOrNull = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const SORTS = {
+  newest: { addedAt: -1 },
+  "price-asc": { effectivePrice: 1 },
+  "price-desc": { effectivePrice: -1 },
+  discount: { discount: -1 },
+  name: { name: 1 },
+};
+
+// Menu listing shared by /foods and /foods/offer. Prices are compared after the
+// discount, which is what the customer pays.
+async function listFoods(foodsCollection, query, { offersOnly = false } = {}) {
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const limit = Math.min(48, Math.max(1, Number.parseInt(query.limit, 10) || 12));
+  const search = typeof query.search === "string" ? query.search.trim() : "";
+  const minPrice = numberOrNull(query.minPrice);
+  const maxPrice = numberOrNull(query.maxPrice);
+  const minDiscount = numberOrNull(query.minDiscount);
+
+  const match = {};
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    match.$or = [{ name: pattern }, { description: pattern }];
+  }
+  if (offersOnly || query.onOffer === "true") match.discount = { $gt: 0 };
+  if (minDiscount !== null && minDiscount > 0) {
+    match.discount = { ...(match.discount || {}), $gte: minDiscount };
+  }
+  if (query.available === "true") match.available = { $ne: false };
+  if (query.available === "false") match.available = false;
+
+  const priceMatch = {};
+  if (minPrice !== null) priceMatch.$gte = minPrice;
+  if (maxPrice !== null) priceMatch.$lte = maxPrice;
+
+  const pipeline = [
+    { $match: match },
+    {
+      $addFields: {
+        effectivePrice: {
+          $round: [
+            {
+              $subtract: [
+                "$price",
+                { $divide: [{ $multiply: ["$price", { $ifNull: ["$discount", 0] }] }, 100] },
+              ],
+            },
+            0,
+          ],
+        },
+      },
+    },
+    ...(Object.keys(priceMatch).length ? [{ $match: { effectivePrice: priceMatch } }] : []),
+    { $sort: { ...(SORTS[query.sort] || SORTS.newest), _id: 1 } },
+    {
+      $facet: {
+        foods: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+        total: [{ $count: "count" }],
+      },
+    },
+  ];
+
+  const [result] = await foodsCollection.aggregate(pipeline).toArray();
+  return { foods: result.foods, total: result.total[0]?.count || 0 };
+}
 
 export default (foodsCollection, notificationsCollection) => {
   router.get("/", async (req, res) => {
     try {
-      let { page = 1, limit = 12 } = req.query;
-      page = parseInt(page);
-      limit = parseInt(limit);
-      const skip = (page - 1) * limit;
-
-      const total = await foodsCollection.countDocuments();
-      const foods = await foodsCollection
-        .find({})
-        .sort({ addedAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .toArray();
-
-      res.send({ foods, total });
+      res.send(await listFoods(foodsCollection, req.query));
     } catch (err) {
       res
         .status(500)
@@ -45,22 +105,7 @@ export default (foodsCollection, notificationsCollection) => {
 
   router.get("/offer", async (req, res) => {
     try {
-      let { page = 1, limit = 12 } = req.query;
-      page = parseInt(page);
-      limit = parseInt(limit);
-      const skip = (page - 1) * limit;
-
-      const total = await foodsCollection.countDocuments({
-        discount: { $gt: 0 },
-      });
-      const foods = await foodsCollection
-        .find({ discount: { $gt: 0 } })
-        .sort({ addedAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .toArray();
-
-      res.send({ foods, total });
+      res.send(await listFoods(foodsCollection, req.query, { offersOnly: true }));
     } catch (err) {
       res
         .status(500)
@@ -144,8 +189,8 @@ export default (foodsCollection, notificationsCollection) => {
 
       const newFood = {
         name: name.trim(),
-        price,
-        discount,
+        price: whole(price),
+        discount: whole(discount),
         description: description.trim(),
         image,
         available,
@@ -204,11 +249,14 @@ export default (foodsCollection, notificationsCollection) => {
         return res.status(404).json({ error: "Food not found" });
       }
 
+      const newPrice = whole(price);
+      const newDiscount = whole(discount);
+
       const updateDoc = {
         $set: {
           name,
-          price,
-          discount,
+          price: newPrice,
+          discount: newDiscount,
           description,
           available,
           image,
@@ -218,7 +266,7 @@ export default (foodsCollection, notificationsCollection) => {
 
       const result = await foodsCollection.updateOne(query, updateDoc);
 
-      if (discount > food.discount) {
+      if (newDiscount > food.discount) {
         const notification = {
           type: "broadcast",
           message: `Discount added on food item: ${food.name}.`,

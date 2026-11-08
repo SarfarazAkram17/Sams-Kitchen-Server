@@ -3,9 +3,9 @@ const router = express.Router();
 import { ObjectId } from "mongodb";
 import { ADMIN_EMAIL } from "../config/admin.js";
 import verifyJwt from "../middleware/verifyJwt.js";
-import verifyAdmin from "../middleware/verifyAdmin.js";
-import verifyRider from "../middleware/verifyRider.js";
+import { verifyAdmin, verifyRider } from "../middleware/verifyRole.js";
 import { saveNotification } from "../services/notifications.js";
+import { escapeRegex, searchTerm } from "../utils/queryHelpers.js";
 
 // Same earning rule used by the rider stats: the delivery charge, or the base
 // rider rate (30 / 50) when the customer got free delivery.
@@ -17,8 +17,8 @@ const earningExpr = {
   ],
 };
 
-const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-const taka = (n) => `৳${round2(n).toLocaleString("en-BD")}`;
+const whole = (n) => Math.round(Number(n) || 0);
+const taka = (n) => `৳${whole(n).toLocaleString("en-BD")}`;
 
 // Delivered orders that are not part of any cashout request yet.
 const availableEarnings = (email) => ({
@@ -91,10 +91,10 @@ export default (cashoutsCollection, ordersCollection, notificationsCollection) =
       const bucket = (key) => rows.find((row) => row._id === key);
 
       res.send({
-        available: round2(bucket("available")?.amount),
+        available: whole(bucket("available")?.amount),
         availableOrders: bucket("available")?.orders || 0,
-        requested: round2(bucket("requested")?.amount),
-        cashedOut: round2(bucket("cashed_out")?.amount),
+        requested: whole(bucket("requested")?.amount),
+        cashedOut: whole(bucket("cashed_out")?.amount),
       });
     } catch (error) {
       res.status(500).send({ message: "Failed to load your balance" });
@@ -105,10 +105,12 @@ export default (cashoutsCollection, ordersCollection, notificationsCollection) =
     try {
       const { page, limit } = parsePaging(req.query);
       const query = { riderEmail: req.user.email };
+      if (["pending", "cashed_out"].includes(req.query.status)) query.status = req.query.status;
+      if (METHOD_FIELDS[req.query.method]) query.method = req.query.method;
       const [requests, total] = await Promise.all([
         cashoutsCollection
           .find(query)
-          .sort({ requestedAt: -1 })
+          .sort({ requestedAt: req.query.sort === "oldest" ? 1 : -1 })
           .skip((page - 1) * limit)
           .limit(limit)
           .toArray(),
@@ -170,7 +172,7 @@ export default (cashoutsCollection, ordersCollection, notificationsCollection) =
         riderName: claimed.riderName,
         method,
         details: cleanDetails,
-        amount: round2(claimed.amount),
+        amount: whole(claimed.amount),
         orderIds: claimed.orderIds,
         status: "pending",
         requestedAt: new Date().toISOString(),
@@ -203,21 +205,31 @@ export default (cashoutsCollection, ordersCollection, notificationsCollection) =
       const status = req.query.status === "cashed_out" ? "cashed_out" : "pending";
       const { page, limit } = parsePaging(req.query);
       const sort = status === "pending" ? { requestedAt: 1 } : { cashedOutAt: -1 };
+      const listQuery = { status };
+      const term = searchTerm(req.query.search);
+      if (term) {
+        const pattern = new RegExp(escapeRegex(term), "i");
+        listQuery.$or = [{ riderName: pattern }, { riderEmail: pattern }, { transactionId: pattern }];
+      }
+      if (METHOD_FIELDS[req.query.method]) listQuery.method = req.query.method;
+      if (req.query.sort === "highest") Object.keys(sort).forEach((key) => delete sort[key]);
+      const finalSort = req.query.sort === "highest" ? { amount: -1 } : sort;
 
-      const [requests, pendingCount, cashedOutCount] = await Promise.all([
+      const [requests, pendingCount, cashedOutCount, matched] = await Promise.all([
         cashoutsCollection
-          .find({ status })
-          .sort(sort)
+          .find(listQuery)
+          .sort(finalSort)
           .skip((page - 1) * limit)
           .limit(limit)
           .toArray(),
         cashoutsCollection.countDocuments({ status: "pending" }),
         cashoutsCollection.countDocuments({ status: "cashed_out" }),
+        cashoutsCollection.countDocuments(listQuery),
       ]);
 
       res.send({
         requests,
-        total: status === "pending" ? pendingCount : cashedOutCount,
+        total: matched,
         counts: { pending: pendingCount, cashed_out: cashedOutCount },
       });
     } catch (error) {

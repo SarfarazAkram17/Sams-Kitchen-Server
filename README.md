@@ -56,22 +56,30 @@ config/
 ├── stripe.js           Stripe client
 └── admin.js            admin inbox address
 middleware/
-├── verifyJwt.js        checks the cookie and that ?email= matches it
-├── verifyAdmin.js      admin only (role from the token)
-├── verifyRider.js      rider only (role from the token)
-└── verifyCustomer.js   customer only (role read from the database)
+├── verifyJwt.js        checks the cookie, that ?email= matches it, and loads the role from the database
+└── verifyRole.js       verifyAdmin, verifyRider, verifyCustomer
+utils/
+└── queryHelpers.js     shared search, paging and order-search helpers
 services/
 ├── notifications.js    saves notifications and streams them over SSE
 └── deliveryOtpEmail.js sends pickup and delivery codes
 routes/                 auth, foods, orders, payments, riders, cashouts,
-                        notifications, reviews, stats, users
+                        notifications, reviews, stats, users, roles
 ```
 
 ## Authentication and access
 
-1. The client signs in with Firebase, then calls `POST /auth/jwt` with the email. The API sets an HTTP-only `token` cookie (one day).
+1. The client signs in with Firebase, then calls `POST /auth/jwt` with the email. The API sets an HTTP-only `token` cookie (one day) and records the sign-in time. An unknown email gets a `404`, and the client then creates the account with `POST /users` and asks again.
 2. Protected routes use `verifyJwt`, which checks the cookie and requires the `?email=` query parameter to match the signed identity.
-3. Role middleware restricts routes further. `verifyCustomer` reads the role from the database rather than the token, so a customer who was just approved as a rider (or made admin) loses customer access immediately. Admins and riders cannot place orders or pay.
+3. `verifyJwt` reads the account's role from the database on every request (the token only identifies the account), and the role guards in `verifyRole.js` restrict routes further. A role change takes effect immediately. Admins and riders cannot place orders or pay.
+
+### Roles and onboarding
+
+Role definitions live in `rolesCollection` (`key`, `label`, `description`, `icon`, `selectable`, `requiresApproval`, `isDefault`, `order`). The three defaults (customer, rider, admin) are inserted once on first start and never overwritten, so edits in MongoDB stick. Only `selectable` roles can be chosen by users; `admin` is not.
+
+- Register with email and password: the chosen role is stored with the account (`POST /users`).
+- Sign in with Google or Facebook for the first time: the account is created without a role, and the client sends the person to `/onboarding`.
+- `POST /users/onboarding` stores the role. A role with `requiresApproval` (rider) also takes the phone, age, experience, region, district and thana, creates a `pending` rider application and notifies the admin. Riders stay inert until an admin approves them; a rejection does not remove anything (see below).
 
 There is no endpoint that creates an admin. Set `role: "admin"` on the user document in MongoDB.
 
@@ -79,29 +87,45 @@ There is no endpoint that creates an admin. Set `role: "admin"` on the user docu
 
 Paths are relative to the API origin.
 
-| Area          | Routes                                                                                                                  | Access                |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| Auth          | `POST /auth/jwt`, `POST /auth/logout`                                                                                   | Public                |
-| Users         | `POST /users`, `GET /users/:email/role`                                                                                 | Public                |
-|               | `PATCH /users`                                                                                                          | Signed in             |
-|               | `GET /users`                                                                                                            | Admin                 |
-| Menu          | `GET /foods`, `/foods/random`, `/foods/offer`, `/foods/offer/random`, `/foods/search`, `/foods/:id`, `POST /foods/cart` | Public                |
-|               | `POST /foods`, `PATCH /foods/:id`, `DELETE /foods/:id`                                                                  | Admin                 |
-| Reviews       | `GET /reviews`                                                                                                          | Public                |
-|               | `POST /reviews`                                                                                                         | Signed in             |
-| Orders        | `POST /orders`                                                                                                          | Customer              |
-|               | `GET /orders`, `GET /orders/:id`, `PATCH /orders/:id` (cancel while unpaid)                                             | Signed in, own orders |
-|               | `GET /orders/kitchen`, `PATCH /orders/:id/prepared`                                                                     | Admin                 |
-|               | `POST /orders/:id/accept`, `POST /orders/:id/status-otp`, `PATCH /orders/:id/status`                                    | Rider                 |
-| Payments      | `POST /payments/create-payment-intent`, `POST /payments/create-ssl-payment`, `POST /payments`                           | Customer              |
-|               | `POST /payments/success-payment`, `/fail-payment`, `/cancel-payment`                                                    | SSLCommerz callbacks  |
-| Riders        | `POST /riders`                                                                                                          | Customer              |
-|               | `GET /riders/pending`, `PATCH /riders/:id/status`, `DELETE /riders/:id`                                                 | Admin                 |
-|               | `GET /riders/me`, `/riders/offers`, `/riders/orders`, `/riders/completedOrders`, `PATCH /riders/me/availability`        | Rider                 |
-| Cashouts      | `GET /cashouts/balance`, `GET /cashouts/me`, `POST /cashouts`                                                           | Rider                 |
-|               | `GET /cashouts`, `PATCH /cashouts/:id/cashed-out`                                                                       | Admin                 |
-| Notifications | `GET /notifications`, `GET /notifications/stream` (SSE), `PATCH /notifications/readAll`                                 | Signed in             |
-| Stats         | `GET /stats/customer`, `/stats/admin`, `/stats/rider`                                                                   | Matching role         |
+| Area          | Routes                                                                                                                                                                                                                                                                                                 | Access                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
+| Auth          | `POST /auth/jwt` (404 for an unknown email), `POST /auth/logout`                                                                                                                                                                                                                                       | Public                |
+| Roles         | `GET /roles`                                                                                                                                                                                                                                                                                           | Public                |
+| Users         | `POST /users` (creates an account; accepts only selectable roles)                                                                                                                                                                                                                                      | Public                |
+|               | `GET /users/me`, `POST /users/onboarding`, `PATCH /users`                                                                                                                                                                                                                                              | Signed in             |
+|               | `GET /users` (filters: `search` on name or email, `role` including `none`, `provider`, `sort`, `page`, `limit`; also returns `roleCounts`)                                                                                                                                                             | Admin                 |
+| Menu          | `GET /foods`, `GET /foods/offer` (filters: `search`, `sort`, `minPrice`, `maxPrice`, `available`, `onOffer`, `minDiscount`, `page`, `limit`), `/foods/random`, `/foods/offer/random`, `/foods/search`, `/foods/:id`, `POST /foods/cart`                                                                | Public                |
+|               | `POST /foods`, `PATCH /foods/:id`, `DELETE /foods/:id`                                                                                                                                                                                                                                                 | Admin                 |
+| Reviews       | `GET /reviews` (filters: `foodId`, `sort`, `rating`, `withPhotos`, `page`, `limit`; returns `total` for the filter and `allTotal`)                                                                                                                                                                     | Public                |
+|               | `POST /reviews`                                                                                                                                                                                                                                                                                        | Signed in             |
+| Orders        | `POST /orders`                                                                                                                                                                                                                                                                                         | Customer              |
+|               | `GET /orders` (filters: `search`, `status`, `payment_status`, `sort`, `page`, `limit`), `GET /orders/:id`, `PATCH /orders/:id` (cancel while unpaid)                                                                                                                                                   | Signed in, own orders |
+|               | `GET /orders/kitchen` (filters: `status` = `confirmed` or `prepared`, `search`, `sort`), `PATCH /orders/:id/prepared`                                                                                                                                                                                  | Admin                 |
+|               | `GET /orders/all` (filters: `status`, `payment_status` = `paid` or `unpaid`, `from` and `to` as `YYYY-MM-DD`, `search`, `sort` = `newest`, `oldest`, `highest` or `lowest`, `page`, `limit`)                                                                                                           | Admin                 |
+|               | `POST /orders/:id/accept`, `POST /orders/:id/status-otp`, `PATCH /orders/:id/status`                                                                                                                                                                                                                   | Rider                 |
+| Payments      | `POST /payments/create-payment-intent`, `POST /payments/create-ssl-payment`, `POST /payments`                                                                                                                                                                                                          | Customer              |
+|               | `POST /payments/success-payment`, `/fail-payment`, `/cancel-payment`                                                                                                                                                                                                                                   | SSLCommerz callbacks  |
+| Riders        | `GET /riders/pending` (filters: `status` = `pending` or `rejected`, `search`, `region`, `district`, `sort`, `page`, `limit`; also returns `allPending` and `allRejected`), `PATCH /riders/:id/status` (approve, also for a rejected application), `PATCH /riders/:id/reject` (body: optional `reason`) | Admin                 |
+|               | `POST /riders/reapply` (a rejected rider sends updated details), `POST /riders/withdraw` (drop a pending or rejected application and return to the default role)                                                                                                                                       | Rider                 |
+|               | `GET /riders/me`, `/riders/offers`, `/riders/orders` (both accept `search`), `/riders/completedOrders` (`search`, `sort`), `PATCH /riders/me/availability`                                                                                                                                             | Rider                 |
+| Cashouts      | `GET /cashouts/balance`, `GET /cashouts/me` (filters: `status`, `method`, `sort`), `POST /cashouts`                                                                                                                                                                                                    | Rider                 |
+|               | `GET /cashouts` (filters: `status`, `search`, `method`, `sort`), `PATCH /cashouts/:id/cashed-out`                                                                                                                                                                                                      | Admin                 |
+| Notifications | `GET /notifications`, `GET /notifications/stream` (SSE), `PATCH /notifications/readAll`                                                                                                                                                                                                                | Signed in             |
+| Stats         | `GET /stats/customer`, `/stats/admin`, `/stats/rider`                                                                                                                                                                                                                                                  | Matching role         |
+
+## Rejected riders
+
+Rejecting an application keeps the account as a rider and keeps the application, with `status: "rejected"`, the reason (up to 300 characters) and the time. The rider is notified, sees the reason on their dashboard, and can either update the details and apply again (`POST /riders/reapply`, which puts the application back to `pending`) or switch to a customer account (`POST /riders/withdraw`). A rejected rider cannot see offers or accept deliveries, and an admin can still approve a rejected application later. `GET /users/me` reports `riderStatus` and `rejectionReason` so the client can show the right screen.
+
+## Search and filtering
+
+List endpoints take their filters as query parameters and do the matching in MongoDB, so a page only receives what it shows. Text search is case-insensitive and escapes special characters. Order search (`utils/queryHelpers.js`) matches the order ID, the customer's name and phone, the delivery address and the dish names. Page size is capped at 50.
+
+## Amounts
+
+The stats endpoints return `daily` (the last 30 days, admin and rider) and `monthly`, which is always January to December of the current year in Dhaka time, so every monthly chart starts in January and months that have not happened yet are empty.
+
+Every amount is a whole taka. Food prices and discounts are rounded when saved, order and payment totals are rounded on the server, and stats and cashout figures are rounded before they are returned. Price filters compare the price after discount.
 
 ## Order lifecycle
 
@@ -121,6 +145,8 @@ pending ──pay──▶ confirmed ──admin──▶ prepared ──rider a
 | `delivered` | `PATCH /orders/:id/status`   | Delivery verified with a code. Rider availability is restored to their saved preference.                                                |
 
 Status timestamps stored on the order: `paidAt`, `preparedAt`, `assignedAt`, `pickedAt`, `deliveredAt`.
+
+`GET /orders/kitchen` (admin only) backs the Kitchen Orders tabs. `confirmed` lists paid orders waiting to be prepared (oldest first) and `prepared` lists paid orders waiting for a rider (newest first). The `counts` in the response give the number behind each tab. Every order, whatever its status, is on the admin All Orders page (`GET /orders/all`).
 
 Riders only see orders that are `prepared` and paid in their own thana. Administrators prepare orders and review rider applications but do not assign deliveries.
 
@@ -154,17 +180,18 @@ Connections are kept in memory, so live delivery needs a persistent Node.js proc
 
 MongoDB database `Sams-Kitchen`:
 
-| Collection                        | Holds                                                           |
-| --------------------------------- | --------------------------------------------------------------- |
-| `usersCollection`                 | Accounts and roles                                              |
-| `foodsCollection`                 | Menu items                                                      |
-| `reviewsCollection`               | Dish reviews                                                    |
-| `ordersCollection`                | Orders, status timestamps, `cashout_status`, `cashoutRequestId` |
-| `paymentsCollection`              | Payment records                                                 |
-| `ridersCollection`                | Rider applications, approval status, availability               |
-| `cashoutsCollection`              | Rider cashout requests, payout details, proof URL               |
-| `notificationsCollection`         | Per-user notifications                                          |
-| `deliveryOtpChallengesCollection` | Hashed pickup and delivery codes                                |
+| Collection                        | Holds                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `usersCollection`                 | Accounts and their role key                                                                                        |
+| `rolesCollection`                 | Role definitions (labels, selectable, requires approval)                                                           |
+| `foodsCollection`                 | Menu items                                                                                                         |
+| `reviewsCollection`               | Dish reviews                                                                                                       |
+| `ordersCollection`                | Orders, status timestamps, `cashout_status`, `cashoutRequestId`                                                    |
+| `paymentsCollection`              | Payment records                                                                                                    |
+| `ridersCollection`                | Rider profiles created at onboarding: `status` (`pending`, `active` or `rejected`), rejection reason, availability |
+| `cashoutsCollection`              | Rider cashout requests, payout details, proof URL                                                                  |
+| `notificationsCollection`         | Per-user notifications                                                                                             |
+| `deliveryOtpChallengesCollection` | Hashed pickup and delivery codes                                                                                   |
 
 ### Upgrading an existing database
 
@@ -176,6 +203,53 @@ db.ordersCollection.updateMany(
   { $set: { status: "prepared" } },
 );
 ```
+
+Accounts created before roles moved to the database keep their `role` and keep working. Rider applications filed before onboarding existed are still approved the normal way, and approval sets the rider role on the account.
+
+Amounts are rounded when saved from now on, but older records keep their decimals (the client shows them rounded). To round them too, back up first and run this once in `mongosh`:
+
+```js
+db.foodsCollection.updateMany({}, [
+  {
+    $set: {
+      price: { $round: ["$price", 0] },
+      discount: { $round: [{ $ifNull: ["$discount", 0] }, 0] },
+    },
+  },
+]);
+
+db.ordersCollection.updateMany({}, [
+  {
+    $set: {
+      subtotal: { $round: [{ $ifNull: ["$subtotal", 0] }, 0] },
+      discount: { $round: [{ $ifNull: ["$discount", 0] }, 0] },
+      deliveryCharge: { $round: [{ $ifNull: ["$deliveryCharge", 0] }, 0] },
+      total: { $round: [{ $ifNull: ["$total", 0] }, 0] },
+      items: {
+        $map: {
+          input: { $ifNull: ["$items", []] },
+          as: "item",
+          in: {
+            $mergeObjects: [
+              "$$item",
+              {
+                price: { $round: [{ $ifNull: ["$$item.price", 0] }, 0] },
+                subtotal: { $round: [{ $ifNull: ["$$item.subtotal", 0] }, 0] },
+              },
+            ],
+          },
+        },
+      },
+    },
+  },
+]);
+
+db.paymentsCollection.updateMany({ amount: { $type: "number" } }, [
+  { $set: { amount: { $round: ["$amount", 0] } } },
+]);
+```
+
+Rounding older orders can leave an item line and its order total 1 taka apart.
 
 ## Deployment
 

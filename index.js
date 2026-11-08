@@ -11,6 +11,7 @@ import ridersRoutes from "./routes/riders.js";
 import statsRoutes from "./routes/stats.js";
 import reviewsRoutes from "./routes/reviews.js";
 import usersRoutes from "./routes/users.js";
+import rolesRoutes from "./routes/roles.js";
 import cashoutsRoutes from "./routes/cashouts.js";
 import notificationsRoutes from "./routes/notifications.js";
 import dns from "dns";
@@ -36,6 +37,7 @@ app.get("/", (req, res) => {
 async function startServer() {
   try {
     const {
+      rolesCollection,
       usersCollection,
       foodsCollection,
       ordersCollection,
@@ -73,6 +75,7 @@ async function startServer() {
         usersCollection,
         ordersCollection,
         notificationsCollection,
+        rolesCollection,
       ),
     );
     app.use(
@@ -100,7 +103,16 @@ async function startServer() {
         notificationsCollection,
       ),
     );
-    app.use("/users", usersRoutes(usersCollection));
+    app.use(
+      "/users",
+      usersRoutes(
+        usersCollection,
+        rolesCollection,
+        ridersCollection,
+        notificationsCollection,
+      ),
+    );
+    app.use("/roles", rolesRoutes(rolesCollection));
     app.use("/notifications", notificationsRoutes(notificationsCollection));
 
     app.listen(port, () => {

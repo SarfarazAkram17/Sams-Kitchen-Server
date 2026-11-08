@@ -20,16 +20,29 @@ export default (
       const skip = (parseInt(page) - 1) * parseInt(limit);
       const limitNum = parseInt(limit);
 
+      // Optional filters: star rating, only reviews with photos, and the sort order.
+      const filter = { foodId };
+      const stars = Number.parseInt(req.query.rating, 10);
+      if (stars >= 1 && stars <= 5) filter.rating = { $gte: stars, $lt: stars + 1 };
+      if (req.query.withPhotos === "true") filter["images.0"] = { $exists: true };
+      const sorts = {
+        newest: { postedAt: -1 },
+        oldest: { postedAt: 1 },
+        highest: { rating: -1, postedAt: -1 },
+        lowest: { rating: 1, postedAt: -1 },
+      };
+
       // Get paginated reviews
       const reviews = await reviewsCollection
-        .find({ foodId })
-        .sort({ postedAt: -1 })
+        .find(filter)
+        .sort(sorts[req.query.sort] || sorts.newest)
         .skip(skip)
         .limit(limitNum)
         .toArray();
 
-      // Get total reviews count
-      const total = await reviewsCollection.countDocuments({ foodId });
+      // Matching reviews, and every review of this dish for the heading
+      const total = await reviewsCollection.countDocuments(filter);
+      const allTotal = await reviewsCollection.countDocuments({ foodId });
 
       // Calculate average rating using aggregation
       const aggResult = await reviewsCollection
@@ -41,7 +54,7 @@ export default (
 
       const avgRating = aggResult.length > 0 ? aggResult[0].avgRating : 0;
 
-      res.json({ reviews, total, avgRating });
+      res.json({ reviews, total, allTotal, avgRating });
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
