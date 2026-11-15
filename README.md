@@ -12,6 +12,8 @@ REST API for **Sam's Kitchen**, a single-restaurant food ordering and delivery p
 - [Authentication and roles](#authentication-and-roles)
 - [API reference](#api-reference)
 - [Order lifecycle](#order-lifecycle)
+- [Order and payment integrity](#order-and-payment-integrity)
+- [Promo codes](#promo-codes)
 - [Rider cashouts](#rider-cashouts)
 - [Rider applications](#rider-applications)
 - [Notifications](#notifications)
@@ -103,31 +105,33 @@ There is no endpoint that creates an admin. Set `role: "admin"` on the user docu
 
 Paths are relative to the API origin.
 
-| Area          | Routes                                                                                                                                                                                                                                                                          | Access                |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| Auth          | `POST /auth/jwt` (404 for an unknown email), `POST /auth/logout`                                                                                                                                                                                                                | Public                |
-| Roles         | `GET /roles`                                                                                                                                                                                                                                                                    | Public                |
-| Users         | `POST /users` (accepts only selectable roles)                                                                                                                                                                                                                                   | Public                |
-|               | `GET /users/me`, `POST /users/onboarding`, `PATCH /users`                                                                                                                                                                                                                       | Signed in             |
-|               | `GET /users` (filters: `search`, `role` including `none`, `provider`, `sort`, `page`, `limit`; also returns `roleCounts`)                                                                                                                                                       | Admin                 |
-| Menu          | `GET /foods`, `GET /foods/offer` (filters: `search`, `sort`, `minPrice`, `maxPrice`, `available`, `onOffer`, `minDiscount`, `page`, `limit`), `/foods/random`, `/foods/offer/random`, `/foods/search`, `/foods/:id`, `POST /foods/cart`                                         | Public                |
-|               | `POST /foods`, `PATCH /foods/:id`, `DELETE /foods/:id`                                                                                                                                                                                                                          | Admin                 |
-| Reviews       | `GET /reviews` (filters: `foodId`, `sort`, `rating`, `withPhotos`, `page`, `limit`; returns `total` and `allTotal`)                                                                                                                                                             | Public                |
-|               | `POST /reviews`                                                                                                                                                                                                                                                                 | Signed in             |
-| Orders        | `POST /orders`                                                                                                                                                                                                                                                                  | Customer              |
-|               | `GET /orders` (filters: `search`, `status`, `payment_status`, `sort`, `page`, `limit`), `GET /orders/:id`, `PATCH /orders/:id` (cancel while unpaid)                                                                                                                            | Signed in, own orders |
-|               | `GET /orders/kitchen` (filters: `status` = `confirmed` or `prepared`, `search`, `sort`; returns `counts` for both tabs), `PATCH /orders/:id/prepared`                                                                                                                           | Admin                 |
-|               | `GET /orders/all` (filters: `status`, `payment_status` = `paid` or `unpaid`, `from` and `to` as `YYYY-MM-DD`, `search`, `sort` = `newest`, `oldest`, `highest` or `lowest`, `page`, `limit`)                                                                                    | Admin                 |
-|               | `POST /orders/:id/accept`, `POST /orders/:id/status-otp`, `PATCH /orders/:id/status`                                                                                                                                                                                            | Rider                 |
-| Payments      | `POST /payments/create-payment-intent`, `POST /payments/create-ssl-payment`, `POST /payments`                                                                                                                                                                                   | Customer              |
-|               | `POST /payments/success-payment`, `/payments/fail-payment`, `/payments/cancel-payment`                                                                                                                                                                                          | SSLCommerz callbacks  |
-| Riders        | `GET /riders/pending` (filters: `status` = `pending` or `rejected`, `search`, `region`, `district`, `sort`, `page`, `limit`; returns `allPending` and `allRejected`), `PATCH /riders/:id/status` (approve, also a rejected one), `PATCH /riders/:id/reject` (optional `reason`) | Admin                 |
-|               | `POST /riders/reapply`, `POST /riders/withdraw`                                                                                                                                                                                                                                 | Rider                 |
-|               | `GET /riders/me`, `/riders/offers`, `/riders/orders`, `/riders/completedOrders`, `PATCH /riders/me/availability`                                                                                                                                                                | Rider                 |
-| Cashouts      | `GET /cashouts/balance`, `GET /cashouts/me` (filters: `status`, `method`, `sort`), `POST /cashouts`                                                                                                                                                                             | Rider                 |
-|               | `GET /cashouts` (filters: `status`, `search`, `method`, `sort`), `PATCH /cashouts/:id/cashed-out`                                                                                                                                                                               | Admin                 |
-| Notifications | `GET /notifications`, `GET /notifications/stream` (SSE), `PATCH /notifications/readAll`                                                                                                                                                                                         | Signed in             |
-| Stats         | `GET /stats/customer`, `/stats/admin`, `/stats/rider`                                                                                                                                                                                                                           | Matching role         |
+| Area          | Routes                                                                                                                                                                                                                                                                                | Access                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Auth          | `POST /auth/jwt` (404 for an unknown email), `POST /auth/logout`                                                                                                                                                                                                                      | Public                |
+| Roles         | `GET /roles`                                                                                                                                                                                                                                                                          | Public                |
+| Users         | `POST /users` (accepts only selectable roles)                                                                                                                                                                                                                                         | Public                |
+|               | `GET /users/me`, `POST /users/onboarding`, `PATCH /users`                                                                                                                                                                                                                             | Signed in             |
+|               | `GET /users` (filters: `search`, `role` including `none`, `provider`, `sort`, `page`, `limit`; also returns `roleCounts`)                                                                                                                                                             | Admin                 |
+| Menu          | `GET /foods`, `GET /foods/offer` (filters: `search`, `sort`, `minPrice`, `maxPrice`, `available`, `onOffer`, `minDiscount`, `page`, `limit`), `/foods/random`, `/foods/offer/random`, `/foods/search`, `/foods/:id`, `POST /foods/cart`                                               | Public                |
+|               | `POST /foods`, `PATCH /foods/:id`, `DELETE /foods/:id`                                                                                                                                                                                                                                | Admin                 |
+| Reviews       | `GET /reviews` (filters: `foodId`, `sort`, `rating`, `withPhotos`, `page`, `limit`; returns `total` and `allTotal`)                                                                                                                                                                   | Public                |
+|               | `POST /reviews`                                                                                                                                                                                                                                                                       | Signed in             |
+| Orders        | `POST /orders` (the server builds the order, see [Order and payment integrity](#order-and-payment-integrity))                                                                                                                                                                         | Customer              |
+|               | `GET /orders` (filters: `search`, `status`, `payment_status`, `sort`, `page`, `limit`), `GET /orders/:id`, `PATCH /orders/:id` (cancel while unpaid)                                                                                                                                  | Signed in, own orders |
+|               | `GET /orders/kitchen` (filters: `status` = `confirmed` or `prepared`, `search`, `sort`; returns `counts` for both tabs), `PATCH /orders/:id/prepared`                                                                                                                                 | Admin                 |
+|               | `GET /orders/all` (filters: `status`, `payment_status` = `paid` or `unpaid`, `from` and `to` as `YYYY-MM-DD`, `search`, `sort` = `newest`, `oldest`, `highest` or `lowest`, `page`, `limit`)                                                                                          | Admin                 |
+|               | `POST /orders/:id/accept`, `POST /orders/:id/status-otp`, `PATCH /orders/:id/status`                                                                                                                                                                                                  | Rider                 |
+| Payments      | `POST /payments/create-payment-intent`, `POST /payments/create-ssl-payment`, `POST /payments`                                                                                                                                                                                         | Customer              |
+|               | `POST /payments/success-payment`, `/payments/fail-payment`, `/payments/cancel-payment`                                                                                                                                                                                                | SSLCommerz callbacks  |
+| Riders        | `GET /riders/pending` (filters: `status` = `pending` or `rejected`, `search`, `region`, `district`, `sort`, `page`, `limit`; returns `allPending` and `allRejected`), `PATCH /riders/:id/status` (approve, also a rejected one), `PATCH /riders/:id/reject` (optional `reason`)       | Admin                 |
+|               | `POST /riders/reapply`, `POST /riders/withdraw`                                                                                                                                                                                                                                       | Rider                 |
+|               | `GET /riders/me`, `/riders/offers`, `/riders/orders`, `/riders/completedOrders`, `PATCH /riders/me/availability`                                                                                                                                                                      | Rider                 |
+| Cashouts      | `GET /cashouts/balance`, `GET /cashouts/me` (filters: `status`, `method`, `sort`), `POST /cashouts`                                                                                                                                                                                   | Rider                 |
+|               | `GET /cashouts` (filters: `status`, `search`, `method`, `sort`), `PATCH /cashouts/:id/cashed-out`                                                                                                                                                                                     | Admin                 |
+| Promo codes   | `GET /promos` (filters: `status` = `active`, `scheduled`, `expired` or `disabled`, `search`, `sort` = `newest`, `oldest`, `code` or `used`, `page`, `limit`; returns `counts`), `POST /promos`, `PATCH /promos/:id` (edit, or `{ active }` to switch on or off), `DELETE /promos/:id` | Admin                 |
+|               | `POST /promos/validate` (previews the discount for checkout)                                                                                                                                                                                                                          | Customer              |
+| Notifications | `GET /notifications`, `GET /notifications/stream` (SSE), `PATCH /notifications/readAll`                                                                                                                                                                                               | Signed in             |
+| Stats         | `GET /stats/customer`, `/stats/admin`, `/stats/rider`                                                                                                                                                                                                                                 | Matching role         |
 
 ## Order lifecycle
 
@@ -153,6 +157,28 @@ Status timestamps stored on the order: `paidAt`, `preparedAt`, `assignedAt`, `pi
 - **Riders** only see orders that are `prepared` and paid in their own thana. Administrators prepare orders and review rider applications but do not assign deliveries.
 
 **Verification codes.** Before pickup the rider requests a six-digit code, which is emailed to the admin inbox. Before delivery it is emailed to the customer's order email. Codes are stored as an HMAC hash, expire after 5 minutes, allow 5 attempts and are deleted after use. `EMAIL` and `PASS` must be configured.
+
+## Order and payment integrity
+
+The browser never decides what an order costs. Everything that is saved or charged comes from the database.
+
+- **Orders** (`POST /orders`). The browser sends only the cart (`foodId` and `quantity`), the delivery details, an optional promo code and the total it displayed. The server loads the dishes from `foodsCollection` and saves their name, image, price and discount. It works out the subtotal, food discounts, delivery charge and total itself, takes the email from the signed-in account, and sets the status and timestamps. Unknown or unavailable dishes, invalid quantities (whole numbers, 1 to 100 per dish) and invalid delivery details are rejected, and any other field in the request is ignored.
+- **Changed prices.** If the total the browser displayed is not the total the server calculated (for example a price changed while the dish sat in the cart), the order is refused with `409` and `code: "PRICE_CHANGED"`, so the customer can review the new total. An unavailable dish returns `code: "UNAVAILABLE"`.
+- **Delivery charge.** ৳30 for one dish, ৳50 for more than one, and free once the food after discounts plus delivery reaches ৳1000.
+- **Stripe.** `POST /payments/create-payment-intent` takes only an order ID and charges the saved order total, with the order ID and the customer's email attached to the payment. `POST /payments` takes the order ID and the Stripe payment ID, retrieves that payment from Stripe, and records it only if it succeeded in BDT, for exactly the order total, for this order and customer, and has not been recorded before. The saved amount and method come from the order, not from the request.
+- **SSLCommerz.** `POST /payments/create-ssl-payment` builds the gateway request and the payment record from the saved order. On the success callback the server validates the payment with SSLCommerz and checks the transaction ID, currency and amount before marking the order paid. The fail and cancel callbacks only remove pending records, never a finished payment.
+
+## Promo codes
+
+Admins create and manage codes; customers enter one at checkout.
+
+- **Fields.** `code` (3 to 20 letters, numbers, dashes or underscores; saved in capitals and never changed afterwards), `description`, `type` (`percent` or `fixed`), `value`, `maxDiscount` (percent only), `minOrder`, `usageLimit` (total uses; empty means unlimited), `perUserLimit` (uses per customer, default 1), `startsAt` and `expiresAt` (days in Bangladesh time; the last day is included) and `active`.
+- **Discount.** It applies to the food after food discounts, never to delivery. It is a whole taka and never more than the food total. An order can use one code.
+- **When a code works.** It is active, inside its dates, under its usage limit, the food total reaches `minOrder`, and the customer is under `perUserLimit` (cancelled orders do not count).
+- **At checkout.** `POST /promos/validate` previews the discount. `POST /orders` checks the code again, works out the discount itself, saves `promoCode` and `promoDiscount` on the order and lowers the total.
+- **Usage count.** A use is reserved in one atomic step when the order is placed, so two customers cannot take the last use. It is given back if the order cannot be saved or is cancelled while unpaid.
+- **Deleting a code** does not change orders that already used it.
+- **Status in the admin list.** Active, scheduled, expired, used up (listed under Expired) or disabled.
 
 ## Rider cashouts
 
@@ -184,18 +210,19 @@ Connections are kept in memory, so live delivery needs a persistent Node.js proc
 
 MongoDB database `Sams-Kitchen`:
 
-| Collection                        | Holds                                                                                        |
-| --------------------------------- | -------------------------------------------------------------------------------------------- |
-| `usersCollection`                 | Accounts and their role key                                                                  |
-| `rolesCollection`                 | Role definitions (labels, selectable, requires approval)                                     |
-| `foodsCollection`                 | Menu items                                                                                   |
-| `reviewsCollection`               | Dish reviews                                                                                 |
-| `ordersCollection`                | Orders, status timestamps, `cashout_status`, `cashoutRequestId`                              |
-| `paymentsCollection`              | Payment records                                                                              |
-| `ridersCollection`                | Rider profiles: `status` (`pending`, `active` or `rejected`), rejection reason, availability |
-| `cashoutsCollection`              | Rider cashout requests, payout details, proof URL                                            |
-| `notificationsCollection`         | Per-user notifications                                                                       |
-| `deliveryOtpChallengesCollection` | Hashed pickup and delivery codes                                                             |
+| Collection                        | Holds                                                                                         |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `usersCollection`                 | Accounts and their role key                                                                   |
+| `rolesCollection`                 | Role definitions (labels, selectable, requires approval)                                      |
+| `foodsCollection`                 | Menu items                                                                                    |
+| `reviewsCollection`               | Dish reviews                                                                                  |
+| `ordersCollection`                | Orders, status timestamps, `promoCode`, `promoDiscount`, `cashout_status`, `cashoutRequestId` |
+| `paymentsCollection`              | Payment records                                                                               |
+| `promosCollection`                | Promo codes and how often each has been used (unique `code`)                                  |
+| `ridersCollection`                | Rider profiles: `status` (`pending`, `active` or `rejected`), rejection reason, availability  |
+| `cashoutsCollection`              | Rider cashout requests, payout details, proof URL                                             |
+| `notificationsCollection`         | Per-user notifications                                                                        |
+| `deliveryOtpChallengesCollection` | Hashed pickup and delivery codes                                                              |
 
 ## Conventions
 
@@ -279,7 +306,7 @@ These URLs are hard-coded in `routes/payments.js` and must be changed for anothe
 ## Known limitations
 
 - **Sign-in is not verified server-side.** `POST /auth/jwt` issues a token for any registered email without checking the Firebase sign-in. Verify the Firebase ID token with the Firebase Admin SDK before production use.
-- **Order totals come from the client.** `POST /orders` stores the submitted prices and delivery charge, and the SSLCommerz and Stripe amounts are based on them. The server does not recompute them.
 - The `ipn_url` sent to SSLCommerz has no matching route.
 - Card numbers entered for payouts are stored as typed so the admin can send the money.
+- A promo code use is held from the moment an order is placed until it is cancelled, so an unpaid order keeps its use. A customer who opens two checkouts at the same moment can use a code twice.
 - There are no automated tests.

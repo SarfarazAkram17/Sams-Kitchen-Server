@@ -17,6 +17,9 @@ import {
   pageParams,
   withClauses,
 } from "../utils/queryHelpers.js";
+import { checkPromo, normalizeCode } from "../utils/promo.js";
+import { buildOrderItems, calcTotals, whole } from "../utils/pricing.js";
+import { parseCartLines, parseCustomer } from "../utils/orderInput.js";
 
 const ORDER_STATUSES = [
   "pending",
@@ -41,6 +44,8 @@ export default (
   ridersCollection,
   notificationsCollection,
   deliveryOtpChallengesCollection,
+  promosCollection,
+  foodsCollection,
 ) => {
   const otpHashSecret = () => process.env.JWT_SECRET;
   const statusOtpId = (orderId, status) => `${orderId}:${status}`;
@@ -301,31 +306,140 @@ export default (
 
   router.post("/", verifyJwt, verifyCustomer, async (req, res) => {
     try {
-      const orderData = req.body;
+      const body = req.body || {};
 
-      if (
-        !orderData.customer ||
-        orderData.customer.email !== req.user.email ||
-        !orderData.items ||
-        !Array.isArray(orderData.items) ||
-        orderData.items.length === 0 ||
-        !orderData.customer.address?.thana
-      ) {
-        return res.status(400).send({ message: "Invalid order data" });
+      // The order is built here from the database. Dish names, images, prices and
+      // discounts come from the foods, the email from the signed-in account, and
+      // every total is worked out on the server. The browser only supplies the
+      // cart (which dishes and how many) and the delivery details.
+      const parsedCustomer = parseCustomer(body.customer, req.user.email);
+      if (parsedCustomer.error) {
+        return res.status(400).send({ message: parsedCustomer.error });
+      }
+      const parsedCart = parseCartLines(body.items);
+      if (parsedCart.error) {
+        return res.status(400).send({ message: parsedCart.error });
       }
 
-      const whole = (value) => Math.round(Number(value) || 0);
-      orderData.items = orderData.items.map((item) => ({
-        ...item,
-        price: whole(item.price),
-        subtotal: whole(item.subtotal),
-      }));
-      orderData.subtotal = whole(orderData.subtotal);
-      orderData.discount = whole(orderData.discount);
-      orderData.deliveryCharge = whole(orderData.deliveryCharge);
-      orderData.total = whole(orderData.total);
+      const foods = await foodsCollection
+        .find({
+          _id: {
+            $in: parsedCart.lines.map((line) => new ObjectId(line.foodId)),
+          },
+        })
+        .toArray();
+      const foodsById = new Map(
+        foods.map((food) => [food._id.toString(), food]),
+      );
 
-      const result = await ordersCollection.insertOne(orderData);
+      if (parsedCart.lines.some((line) => !foodsById.has(line.foodId))) {
+        return res
+          .status(400)
+          .send({
+            message: "Some items in your cart are no longer on the menu.",
+          });
+      }
+
+      const unavailable = parsedCart.lines
+        .map((line) => foodsById.get(line.foodId))
+        .filter((food) => food.available === false);
+      if (unavailable.length > 0) {
+        const names = unavailable.map((food) => food.name).join(", ");
+        return res.status(409).send({
+          code: "UNAVAILABLE",
+          message: `${names} ${unavailable.length > 1 ? "are" : "is"} not available right now. Please remove ${unavailable.length > 1 ? "them" : "it"} from your cart.`,
+        });
+      }
+
+      const items = buildOrderItems(parsedCart.lines, foodsById);
+      const totals = calcTotals(items);
+
+      // If the browser was showing different prices (a price changed while the
+      // dishes sat in the cart), stop and let the customer review the new total.
+      if (body.total !== undefined && whole(body.total) !== totals.total) {
+        return res.status(409).send({
+          code: "PRICE_CHANGED",
+          message:
+            "Some prices changed since you added these items. Please review your order and try again.",
+        });
+      }
+
+      const orderData = {
+        customer: parsedCustomer.data,
+        items,
+        subtotal: totals.subtotal,
+        deliveryCharge: totals.deliveryCharge,
+        discount: totals.discount,
+        total: totals.total,
+        payment_status: "not_paid",
+        status: "pending",
+        placedAt: new Date().toISOString(),
+      };
+
+      // Promo code: the discount is worked out here from the saved items, never
+      // taken from the browser. The code is counted as used straight away, and
+      // given back if the order cannot be saved or is cancelled while unpaid.
+      const promoCode = normalizeCode(body.promoCode);
+      let reservedPromoId = null;
+
+      if (promoCode) {
+        const promo = await promosCollection.findOne({ code: promoCode });
+        if (!promo) {
+          return res
+            .status(400)
+            .send({ message: "This promo code does not exist." });
+        }
+
+        const payable = items.reduce((sum, item) => sum + item.subtotal, 0);
+        const check = checkPromo(promo, payable);
+        if (!check.ok) return res.status(400).send({ message: check.message });
+
+        const timesUsed = await ordersCollection.countDocuments({
+          "customer.email": req.user.email,
+          promoCode,
+          status: { $ne: "cancelled" },
+        });
+        if (timesUsed >= (promo.perUserLimit || 1)) {
+          return res
+            .status(409)
+            .send({ message: "You have already used this promo code." });
+        }
+
+        const reserved = await promosCollection.findOneAndUpdate(
+          {
+            _id: promo._id,
+            active: true,
+            $or: [
+              { usageLimit: null },
+              { $expr: { $lt: ["$usedCount", "$usageLimit"] } },
+            ],
+          },
+          { $inc: { usedCount: 1 } },
+        );
+        if (!reserved) {
+          return res
+            .status(409)
+            .send({ message: "This promo code has reached its usage limit." });
+        }
+
+        reservedPromoId = promo._id;
+        orderData.promoCode = promoCode;
+        orderData.promoDiscount = check.discount;
+        orderData.total = Math.max(0, orderData.total - check.discount);
+      }
+
+      let result;
+      try {
+        result = await ordersCollection.insertOne(orderData);
+      } catch (insertError) {
+        if (reservedPromoId) {
+          await promosCollection.updateOne(
+            { _id: reservedPromoId, usedCount: { $gt: 0 } },
+            { $inc: { usedCount: -1 } },
+          );
+        }
+        throw insertError;
+      }
 
       const notificationForUser = {
         type: "direct",
@@ -380,12 +494,26 @@ export default (
       const updateDoc = {
         $set: { status, cancelledAt: new Date().toISOString() },
       };
-      const result = await ordersCollection.updateOne(filter, updateDoc);
+      const cancelled = await ordersCollection.findOneAndUpdate(
+        filter,
+        updateDoc,
+        {
+          projection: { promoCode: 1 },
+        },
+      );
 
-      if (result.matchedCount === 0) {
+      if (!cancelled) {
         return res
           .status(409)
           .send({ message: "This order cannot be cancelled" });
+      }
+
+      // A cancelled unpaid order gives its promo code use back.
+      if (cancelled.promoCode) {
+        await promosCollection.updateOne(
+          { code: cancelled.promoCode, usedCount: { $gt: 0 } },
+          { $inc: { usedCount: -1 } },
+        );
       }
 
       const notificationForUser = {
@@ -412,7 +540,7 @@ export default (
 
       res.send({
         message: "Order status updated",
-        modifiedCount: result.modifiedCount,
+        modifiedCount: 1,
       });
     } catch (error) {
       res.status(500).send({

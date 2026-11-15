@@ -8,128 +8,177 @@ import verifyJwt from "../middleware/verifyJwt.js";
 import { verifyCustomer } from "../middleware/verifyRole.js";
 import { saveNotification } from "../services/notifications.js";
 
+const API_URL = "https://sams-kitchen.vercel.app";
+const CLIENT_ORDERS_URL = "https://sams-kitchen.netlify.app/dashboard/myOrders";
+
 export default (
   ordersCollection,
   paymentsCollection,
   notificationsCollection,
 ) => {
-  router.post("/create-ssl-payment", verifyJwt, verifyCustomer, async (req, res) => {
-    const store_id = process.env.STORE_ID;
-    const store_passwd = process.env.STORE_PASSWORD;
+  // Every amount below comes from the saved order. Nothing about the price, the
+  // payment method or the customer is taken from the request.
 
-    const payment = req.body;
-    if (!ObjectId.isValid(String(payment.orderId || ""))) {
-      return res.status(400).send({ message: "Invalid order ID" });
-    }
-    const order = await ordersCollection.findOne({
-      _id: new ObjectId(payment.orderId),
-      "customer.email": req.user.email,
+  // The order a customer can still pay for: theirs, unpaid and not cancelled.
+  const findPayableOrder = async (orderId, email) => {
+    if (!ObjectId.isValid(String(orderId || ""))) return null;
+    return ordersCollection.findOne({
+      _id: new ObjectId(orderId),
+      "customer.email": email,
       payment_status: { $ne: "paid" },
       status: "pending",
     });
-    if (!order) {
-      return res.status(404).send({ message: "Payable order not found" });
-    }
-    payment.email = req.user.email;
+  };
 
-    const tran_id = new ObjectId().toString();
-    payment.transactionId = tran_id;
+  router.post(
+    "/create-ssl-payment",
+    verifyJwt,
+    verifyCustomer,
+    async (req, res) => {
+      try {
+        const order = await findPayableOrder(req.body?.orderId, req.user.email);
+        if (!order) {
+          return res.status(404).send({ message: "Payable order not found" });
+        }
+        if (!(order.total > 0)) {
+          return res
+            .status(400)
+            .send({ message: "This order has nothing to pay." });
+        }
 
-    const initiate = {
-      store_id,
-      store_passwd,
-      total_amount: Math.round(order.total),
-      currency: "BDT",
-      tran_id,
-      success_url: "https://sams-kitchen.vercel.app/payments/success-payment",
-      fail_url: "https://sams-kitchen.vercel.app/payments/fail-payment",
-      cancel_url: "https://sams-kitchen.vercel.app/payments/cancel-payment",
-      ipn_url: "https://sams-kitchen.vercel.app/payments/ipn-success-payment",
-      shipping_method: "Courier",
-      product_name: "Foods",
-      product_category: "Food",
-      product_profile: "general",
-      cus_name: payment.name,
-      cus_email: payment.email,
-      cus_add1: order.customer.address.district,
-      cus_city: order.customer.address.thana,
-      cus_state: order.customer.address.region,
-      cus_country: "Bangladesh",
-      cus_phone: order.customer.phone,
-      ship_name: payment.name,
-      ship_add1: order.customer.address.district,
-      ship_city: order.customer.address.thana,
-      ship_state: order.customer.address.region,
-      ship_postcode: 1000,
-      ship_country: "Bangladesh",
-    };
+        const tran_id = new ObjectId().toString();
+        const name =
+          `${order.customer.firstName} ${order.customer.lastName}`.trim();
+        const address = order.customer.address;
 
-    const iniRes = await axios({
-      url: "https://sandbox.sslcommerz.com/gwprocess/v4/api.php",
-      method: "POST",
-      data: initiate,
-      headers: { "Content-type": "application/x-www-form-urlencoded" },
-    });
+        const initiate = {
+          store_id: process.env.STORE_ID,
+          store_passwd: process.env.STORE_PASSWORD,
+          total_amount: Math.round(order.total),
+          currency: "BDT",
+          tran_id,
+          success_url: `${API_URL}/payments/success-payment`,
+          fail_url: `${API_URL}/payments/fail-payment`,
+          cancel_url: `${API_URL}/payments/cancel-payment`,
+          ipn_url: `${API_URL}/payments/ipn-success-payment`,
+          shipping_method: "Courier",
+          product_name: "Foods",
+          product_category: "Food",
+          product_profile: "general",
+          cus_name: name,
+          cus_email: req.user.email,
+          cus_add1: address.district,
+          cus_city: address.thana,
+          cus_state: address.region,
+          cus_country: "Bangladesh",
+          cus_phone: order.customer.phone,
+          ship_name: name,
+          ship_add1: address.district,
+          ship_city: address.thana,
+          ship_state: address.region,
+          ship_postcode: 1000,
+          ship_country: "Bangladesh",
+        };
 
-    const gatewayUrl = iniRes?.data?.GatewayPageURL;
+        const iniRes = await axios({
+          url: "https://sandbox.sslcommerz.com/gwprocess/v4/api.php",
+          method: "POST",
+          data: initiate,
+          headers: { "Content-type": "application/x-www-form-urlencoded" },
+        });
 
-    await paymentsCollection.insertOne(payment);
+        const gatewayUrl = iniRes?.data?.GatewayPageURL;
+        if (!gatewayUrl) {
+          return res
+            .status(502)
+            .send({
+              message: "The payment gateway did not respond. Please try again.",
+            });
+        }
 
-    res.status(201).send({ gatewayUrl });
-  });
+        await paymentsCollection.insertOne({
+          orderId: order._id.toString(),
+          email: req.user.email,
+          name,
+          amount: Math.round(order.total),
+          paymentMethod: "SSL Commerz",
+          transactionId: tran_id,
+          status: "pending",
+          createdAt: new Date().toISOString(),
+        });
+
+        res.status(201).send({ gatewayUrl });
+      } catch (error) {
+        res
+          .status(502)
+          .send({ message: "Could not start the payment. Please try again." });
+      }
+    },
+  );
 
   router.post("/success-payment", async (req, res) => {
-    const paymentSuccess = req.body;
-    const query = { transactionId: paymentSuccess.tran_id };
-    const payment = await paymentsCollection.findOne(query);
-    if (!payment || !ObjectId.isValid(String(payment.orderId || ""))) {
-      return res.status(404).send({ message: "Payment record not found" });
-    }
-    const orderId = new ObjectId(payment.orderId);
-    const order = await ordersCollection.findOne({ _id: orderId });
-    if (!order) {
-      return res.status(404).send({ message: "Order not found" });
-    }
+    try {
+      const { tran_id, val_id } = req.body || {};
+      if (typeof tran_id !== "string" || typeof val_id !== "string") {
+        return res.redirect(CLIENT_ORDERS_URL);
+      }
 
-    const store_id = process.env.STORE_ID;
-    const store_passwd = process.env.STORE_PASSWORD;
+      const query = { transactionId: tran_id };
+      const payment = await paymentsCollection.findOne(query);
+      if (!payment || !ObjectId.isValid(String(payment.orderId || ""))) {
+        return res.status(404).send({ message: "Payment record not found" });
+      }
+      const orderId = new ObjectId(payment.orderId);
+      const order = await ordersCollection.findOne({ _id: orderId });
+      if (!order) {
+        return res.status(404).send({ message: "Order not found" });
+      }
 
-    const isValidPayment = await axios.get(
-      `https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess.val_id}&store_id=${store_id}&store_passwd=${store_passwd}`,
-    );
+      // Ask SSLCommerz itself whether this payment is real, and make sure it is
+      // this transaction, in BDT, for exactly what the order costs.
+      const validation = await axios.get(
+        "https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php",
+        {
+          params: {
+            val_id,
+            store_id: process.env.STORE_ID,
+            store_passwd: process.env.STORE_PASSWORD,
+          },
+        },
+      );
+      const result = validation?.data;
+      const genuine =
+        ["VALID", "VALIDATED"].includes(result?.status) &&
+        result?.tran_id === payment.transactionId &&
+        (!result?.currency_type || result.currency_type === "BDT") &&
+        Math.abs(Number(result?.amount) - Math.round(order.total)) < 1 &&
+        payment.amount === Math.round(order.total);
 
-    if (isValidPayment?.data?.status === "VALID") {
+      if (!genuine) {
+        await paymentsCollection.deleteOne({
+          ...query,
+          status: { $ne: "payment done" },
+        });
+        return res.redirect(CLIENT_ORDERS_URL);
+      }
+
       const isFirstSuccessfulPayment = order.payment_status !== "paid";
       if (isFirstSuccessfulPayment) {
         const paidAt = new Date().toISOString();
-        const result = await ordersCollection.updateOne(
-          {
-            _id: orderId,
-            payment_status: { $ne: "paid" },
-            status: "pending",
-          },
-          {
-            $set: {
-              payment_status: "paid",
-              status: "confirmed",
-              paidAt,
-            },
-          },
+        const update = await ordersCollection.updateOne(
+          { _id: orderId, payment_status: { $ne: "paid" }, status: "pending" },
+          { $set: { payment_status: "paid", status: "confirmed", paidAt } },
         );
-        if (!result.modifiedCount) {
+        if (!update.modifiedCount) {
           return res
             .status(409)
             .send({ message: "Order is no longer payable" });
         }
       }
 
-      const updatedPayment = {
-        $set: {
-          status: "payment done",
-          paidAt: new Date().toISOString(),
-        },
-      };
-      await paymentsCollection.updateOne(query, updatedPayment);
+      await paymentsCollection.updateOne(query, {
+        $set: { status: "payment done", paidAt: new Date().toISOString() },
+      });
 
       if (isFirstSuccessfulPayment) {
         const createdAt = new Date().toISOString();
@@ -146,7 +195,8 @@ export default (
           saveNotification(notificationsCollection, {
             type: "direct",
             email: ADMIN_EMAIL,
-            message: "Payment received. The order is confirmed and ready to be prepared.",
+            message:
+              "Payment received. The order is confirmed and ready to be prepared.",
             relatedId: payment.orderId.toString(),
             createdAt,
             isRead: false,
@@ -154,106 +204,150 @@ export default (
         ]);
       }
 
-      return res.redirect(
-        "https://sams-kitchen.netlify.app/dashboard/myOrders",
-      );
-    } else {
-      await paymentsCollection.deleteOne(query);
-      res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
-      return res.send({ message: "Invalid payment" });
-    }
-  });
-
-  router.post("/fail-payment", async (req, res) => {
-    const failPayment = req.body;
-    const query = { transactionId: failPayment.tran_id };
-    await paymentsCollection.deleteOne(query);
-    return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
-  });
-
-  router.post("/cancel-payment", async (req, res) => {
-    const cancelPayment = req.body;
-    const query = { transactionId: cancelPayment.tran_id };
-    await paymentsCollection.deleteOne(query);
-    return res.redirect("https://sams-kitchen.netlify.app/dashboard/myOrders");
-  });
-
-  router.post("/create-payment-intent", verifyJwt, verifyCustomer, async (req, res) => {
-    try {
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(Number(req.body.amountInCents) || 0),
-        currency: "bdt",
-        payment_method_types: ["card"],
-      });
-      res.json({ clientSecret: paymentIntent.client_secret });
+      return res.redirect(CLIENT_ORDERS_URL);
     } catch (error) {
-      res.status(500).json({ error: error.message });
-      console.log(error)
+      return res.redirect(CLIENT_ORDERS_URL);
     }
   });
 
+  // A failed or cancelled attempt only removes the pending record, never a finished payment.
+  const dropPendingPayment = async (req, res) => {
+    const tranId = req.body?.tran_id;
+    if (typeof tranId === "string") {
+      await paymentsCollection.deleteOne({
+        transactionId: tranId,
+        status: { $ne: "payment done" },
+      });
+    }
+    return res.redirect(CLIENT_ORDERS_URL);
+  };
+  router.post("/fail-payment", dropPendingPayment);
+  router.post("/cancel-payment", dropPendingPayment);
+
+  // The amount to charge is the saved order's total, never a number from the browser.
+  router.post(
+    "/create-payment-intent",
+    verifyJwt,
+    verifyCustomer,
+    async (req, res) => {
+      try {
+        const order = await findPayableOrder(req.body?.orderId, req.user.email);
+        if (!order) {
+          return res.status(404).send({ message: "Payable order not found" });
+        }
+        if (!(order.total > 0)) {
+          return res
+            .status(400)
+            .send({ message: "This order has nothing to pay." });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(order.total) * 100,
+          currency: "bdt",
+          payment_method_types: ["card"],
+          metadata: { orderId: order._id.toString(), email: req.user.email },
+        });
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        console.log(error);
+        res
+          .status(500)
+          .json({ error: "Could not start the payment. Please try again." });
+      }
+    },
+  );
+
+  // Records a card payment. The browser only says which Stripe payment it made;
+  // the server asks Stripe whether it really succeeded, for this order and amount.
   router.post("/", verifyJwt, verifyCustomer, async (req, res) => {
     try {
-      const { orderId, amount, paymentMethod, transactionId } = req.body;
-      if (!ObjectId.isValid(String(orderId || ""))) {
-        return res.status(400).send({ message: "Invalid order ID" });
+      const { orderId, transactionId } = req.body || {};
+      if (
+        typeof transactionId !== "string" ||
+        !transactionId.startsWith("pi_")
+      ) {
+        return res.status(400).send({ message: "Invalid payment reference" });
       }
 
+      const order = await findPayableOrder(orderId, req.user.email);
+      if (!order) {
+        return res
+          .status(404)
+          .send({ message: "Order not found or already paid" });
+      }
+
+      let intent;
+      try {
+        intent = await stripe.paymentIntents.retrieve(transactionId);
+      } catch (stripeError) {
+        return res
+          .status(400)
+          .send({ message: "We could not verify this payment." });
+      }
+
+      const expected = Math.round(order.total) * 100;
+      const received = intent.amount_received ?? intent.amount;
+      const genuine =
+        intent.status === "succeeded" &&
+        intent.currency === "bdt" &&
+        received === expected &&
+        intent.metadata?.orderId === order._id.toString() &&
+        intent.metadata?.email === req.user.email;
+      if (!genuine) {
+        return res
+          .status(400)
+          .send({ message: "We could not verify this payment." });
+      }
+
+      if (await paymentsCollection.findOne({ transactionId: intent.id })) {
+        return res
+          .status(409)
+          .send({ message: "This payment has already been recorded." });
+      }
+
+      const paidAt = new Date().toISOString();
       const updateResult = await ordersCollection.updateOne(
         {
-          _id: new ObjectId(orderId),
+          _id: order._id,
           "customer.email": req.user.email,
           payment_status: { $ne: "paid" },
           status: "pending",
         },
-        {
-          $set: {
-            payment_status: "paid",
-            status: "confirmed",
-            paidAt: new Date().toISOString(),
-          },
-        },
+        { $set: { payment_status: "paid", status: "confirmed", paidAt } },
       );
-
       if (updateResult.modifiedCount === 0) {
         return res
           .status(404)
           .send({ message: "Order not found or already paid" });
       }
 
-      const paymentDoc = {
-        orderId,
+      const paymentResult = await paymentsCollection.insertOne({
+        orderId: order._id.toString(),
         email: req.user.email,
-        amount: Math.round(Number(amount) || 0),
-        paymentMethod,
-        transactionId,
-        paidAt: new Date().toISOString(),
+        amount: Math.round(order.total),
+        paymentMethod: "card",
+        transactionId: intent.id,
+        paidAt,
         status: "payment done",
-      };
+      });
 
-      const paymentResult = await paymentsCollection.insertOne(paymentDoc);
-
-      const notificationForUser = {
+      const relatedId = order._id.toString();
+      await saveNotification(notificationsCollection, {
         type: "direct",
         email: req.user.email,
         message: `Your payment is successfully done. Go to my orders and you can download your reciept.`,
-        relatedId: orderId.toString(),
-        createdAt: new Date().toISOString(),
+        relatedId,
+        createdAt: paidAt,
         isRead: false,
-      };
-
-      await saveNotification(notificationsCollection, notificationForUser);
-
-      const notificationForAdmin = {
+      });
+      await saveNotification(notificationsCollection, {
         type: "direct",
         email: ADMIN_EMAIL,
         message: `Payment received. The order is confirmed and ready to be prepared.`,
-        relatedId: orderId.toString(),
-        createdAt: new Date().toISOString(),
+        relatedId,
+        createdAt: paidAt,
         isRead: false,
-      };
-
-      await saveNotification(notificationsCollection, notificationForAdmin);
+      });
 
       res.status(201).send({
         message: "Payment recorded and parcel marked as paid",

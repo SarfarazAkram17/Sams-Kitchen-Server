@@ -34,14 +34,26 @@ const monthKey = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
 const dayKey = (d) => `${monthKey(d)}-${pad(d.getUTCDate())}`;
 const whole = (n) => Math.round(Number(n) || 0);
 
-// Jan to Dec of the current year (Dhaka time), so monthly charts always start in January.
-const calendarYearMonths = () => {
-  const year = localNow().getUTCFullYear();
+const currentYear = () => localNow().getUTCFullYear();
+
+// Jan to Dec of one year (default: the current year in Dhaka time), so monthly
+// charts always start in January.
+const calendarYearMonths = (year = currentYear()) => {
   return MONTHS.map((name, i) => ({
     key: monthKey(new Date(Date.UTC(year, i, 1))),
     month: `${name} ${year}`,
     label: name,
   }));
+};
+
+// The year a dashboard should show: the one asked for if the account has data in
+// it, otherwise this year, otherwise the newest year that has data.
+const pickYear = (requested, years) => {
+  const asked = Number.parseInt(requested, 10);
+  if (years.includes(asked)) return asked;
+  const now = currentYear();
+  if (years.includes(now)) return now;
+  return years[0] ?? now;
 };
 
 const lastDays = (n) => {
@@ -122,6 +134,39 @@ export default (
     return new Map(rows.map((row) => [row._id, row]));
   };
 
+  // Every calendar year (Dhaka time, newest first) in which the matching orders
+  // have a date in any of `fields`. This feeds the year dropdowns, so a year
+  // only shows up when there is data for it.
+  const yearsWith = async (match, fields) => {
+    const lists = await Promise.all(
+      fields.map((field) =>
+        ordersCollection
+          .aggregate([
+            { $match: { ...match, [field]: { $type: ["string", "date"] } } },
+            {
+              $group: {
+                _id: {
+                  $dateToString: {
+                    format: "%Y",
+                    date: { $toDate: `$${field}` },
+                    timezone: TZ,
+                  },
+                },
+              },
+            },
+          ])
+          .toArray(),
+      ),
+    );
+    const years = new Set(
+      lists
+        .flat()
+        .map((row) => Number(row._id))
+        .filter((year) => Number.isInteger(year)),
+    );
+    return [...years].sort((a, b) => b - a);
+  };
+
   const statusCountsFor = async (match = {}) => {
     const rows = await ordersCollection
       .aggregate([
@@ -198,7 +243,6 @@ export default (
 
       const query = { "customer.email": email };
       const paid = { ...query, payment_status: "paid" };
-      const months = calendarYearMonths();
 
       const [
         statusCounts,
@@ -208,6 +252,7 @@ export default (
         weekdayMap,
         favouriteFoods,
         recent,
+        yearList,
       ] = await Promise.all([
         statusCountsFor(query),
         ordersCollection
@@ -242,8 +287,11 @@ export default (
             placedAt: 1,
           })
           .toArray(),
+        yearsWith(query, ["placedAt", "paidAt"]),
       ]);
 
+      const year = pickYear(req.query.year, yearList);
+      const months = calendarYearMonths(year);
       const spend = spendAgg[0] || {};
       const monthly = months.map((m) => ({
         ...m,
@@ -269,6 +317,8 @@ export default (
         paidOrders: spend.count || 0,
         largestOrder: whole(spend.largest),
         avgOrderValue: spend.count ? whole(spend.spent / spend.count) : 0,
+        year,
+        years: yearList.length ? yearList : [year],
         monthly,
         weekday: weekdaySeries(weekdayMap),
         favouriteFoods,
@@ -290,7 +340,6 @@ export default (
   // --------------------------------------------------------------------- admin
   router.get("/admin", verifyJwt, verifyAdmin, async (req, res) => {
     try {
-      const months = calendarYearMonths();
       const days = lastDays(60);
       const sinceDays = days[0].startIso;
       const paid = { payment_status: "paid" };
@@ -315,6 +364,7 @@ export default (
         topRiderRows,
         speedAgg,
         recent,
+        yearList,
       ] = await Promise.all([
         usersCollection.countDocuments(),
         ridersCollection.countDocuments(),
@@ -457,8 +507,11 @@ export default (
             placedAt: 1,
           })
           .toArray(),
+        yearsWith({}, ["placedAt", "paidAt"]),
       ]);
 
+      const year = pickYear(req.query.year, yearList);
+      const months = calendarYearMonths(year);
       const pay = paymentsAgg[0] || {};
       const totalPayments = pay.total || 0;
 
@@ -490,6 +543,8 @@ export default (
         totalPayments: whole(totalPayments),
         statusCounts,
         cancelledOrders: statusCounts.cancelled || 0,
+        year,
+        years: yearList.length ? yearList : [year],
         monthly,
         daily,
         trends: {
@@ -558,7 +613,6 @@ export default (
 
       const query = { assigned_rider_email: email };
       const delivered = { ...query, status: "delivered" };
-      const months = calendarYearMonths();
       const days = lastDays(60);
       const sinceDays = days[0].startIso;
       const earnAcc = { earnings: { $sum: earningExpr }, orders: { $sum: 1 } };
@@ -573,6 +627,7 @@ export default (
         areaRows,
         speedAgg,
         recent,
+        yearList,
       ] = await Promise.all([
         statusCountsFor(query),
         ordersCollection
@@ -676,8 +731,11 @@ export default (
             deliveredAt: 1,
           })
           .toArray(),
+        yearsWith(delivered, ["deliveredAt"]),
       ]);
 
+      const year = pickYear(req.query.year, yearList);
+      const months = calendarYearMonths(year);
       const totals = totalsAgg[0] || {};
       const totalOrders = Object.values(statusCounts).reduce(
         (a, b) => a + b,
@@ -708,6 +766,8 @@ export default (
         statusCounts,
         cashoutMoney: whole(totals.cashedOut),
         pendingCashout: whole(totals.pendingCashout),
+        year,
+        years: yearList.length ? yearList : [year],
         monthly,
         daily: dailyFull.slice(30),
         trends: {

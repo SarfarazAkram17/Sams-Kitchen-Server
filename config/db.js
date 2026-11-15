@@ -1,5 +1,7 @@
 import { MongoClient, ServerApiVersion } from "mongodb";
 import "dotenv/config";
+import dns from "dns";
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const DB_NAME = "Sams-Kitchen";
 
@@ -10,7 +12,8 @@ const DEFAULT_ROLES = [
   {
     key: "customer",
     label: "Customer",
-    description: "Order fresh meals from Sam's Kitchen and track every delivery.",
+    description:
+      "Order fresh meals from Sam's Kitchen and track every delivery.",
     icon: "customer",
     selectable: true,
     requiresApproval: false,
@@ -79,6 +82,9 @@ async function connectDB() {
     const rolesCollection = db.collection("rolesCollection");
     await seedRoles(rolesCollection);
 
+    const promosCollection = db.collection("promosCollection");
+    await promosCollection.createIndex({ code: 1 }, { unique: true });
+
     return {
       rolesCollection,
       usersCollection: db.collection("usersCollection"),
@@ -89,6 +95,7 @@ async function connectDB() {
       reviewsCollection: db.collection("reviewsCollection"),
       notificationsCollection: db.collection("notificationsCollection"),
       cashoutsCollection: db.collection("cashoutsCollection"),
+      promosCollection,
       deliveryOtpChallengesCollection,
     };
   } catch (error) {

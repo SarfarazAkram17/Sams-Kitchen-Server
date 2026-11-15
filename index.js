@@ -14,8 +14,7 @@ import usersRoutes from "./routes/users.js";
 import rolesRoutes from "./routes/roles.js";
 import cashoutsRoutes from "./routes/cashouts.js";
 import notificationsRoutes from "./routes/notifications.js";
-import dns from "dns";
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
+import promosRoutes from "./routes/promos.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -46,6 +45,7 @@ async function startServer() {
       reviewsCollection,
       notificationsCollection,
       cashoutsCollection,
+      promosCollection,
       deliveryOtpChallengesCollection,
     } = await connectDB();
 
@@ -58,6 +58,8 @@ async function startServer() {
         ridersCollection,
         notificationsCollection,
         deliveryOtpChallengesCollection,
+        promosCollection,
+        foodsCollection,
       ),
     );
     app.use(
@@ -112,6 +114,7 @@ async function startServer() {
         notificationsCollection,
       ),
     );
+    app.use("/promos", promosRoutes(promosCollection, ordersCollection));
     app.use("/roles", rolesRoutes(rolesCollection));
     app.use("/notifications", notificationsRoutes(notificationsCollection));
 
